@@ -1,0 +1,2592 @@
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+import sqlite3
+import hashlib
+import random
+import string
+import json
+import uuid
+from datetime import datetime, timedelta
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# =============================================
+# ===== БАЗА ДАННЫХ =====
+# =============================================
+
+def init_db():
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    
+    # Пользователи
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY,
+        email TEXT UNIQUE,
+        password TEXT,
+        name TEXT,
+        created_at TIMESTAMP,
+        subscription_type TEXT DEFAULT 'free',
+        subscription_end TIMESTAMP,
+        balance REAL DEFAULT 0
+    )''')
+    
+    # Telegram аккаунты
+    c.execute('''CREATE TABLE IF NOT EXISTS tg_accounts (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        phone TEXT,
+        first_name TEXT,
+        last_name TEXT,
+        username TEXT,
+        status TEXT DEFAULT 'Активный',
+        role TEXT DEFAULT 'Писатель',
+        project TEXT DEFAULT '',
+        proxy_id INTEGER,
+        is_warmed INTEGER DEFAULT 0,
+        added_at TIMESTAMP
+    )''')
+    
+    # Прокси
+    c.execute('''CREATE TABLE IF NOT EXISTS proxies (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        ip TEXT,
+        port TEXT,
+        login TEXT,
+        password TEXT,
+        is_active INTEGER DEFAULT 1,
+        created_at TIMESTAMP
+    )''')
+    
+    # Посты
+    c.execute('''CREATE TABLE IF NOT EXISTS posts (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        text TEXT,
+        tone TEXT,
+        scheduled_at TIMESTAMP,
+        is_published INTEGER DEFAULT 0,
+        created_at TIMESTAMP
+    )''')
+    
+    # Комментарии
+    c.execute('''CREATE TABLE IF NOT EXISTS comments (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        account_id INTEGER,
+        channel_id TEXT,
+        text TEXT,
+        status TEXT DEFAULT 'pending',
+        created_at TIMESTAMP
+    )''')
+    
+    # Реакции
+    c.execute('''CREATE TABLE IF NOT EXISTS reactions (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        account_id INTEGER,
+        channel_id TEXT,
+        count INTEGER DEFAULT 0,
+        created_at TIMESTAMP
+    )''')
+    
+    # Диалоги
+    c.execute('''CREATE TABLE IF NOT EXISTS dialogs (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        account_id INTEGER,
+        chat_id TEXT,
+        chat_name TEXT,
+        last_message TEXT,
+        status TEXT DEFAULT 'active',
+        created_at TIMESTAMP
+    )''')
+    
+    # Воронки
+    c.execute('''CREATE TABLE IF NOT EXISTS funnels (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        name TEXT,
+        steps TEXT,
+        is_active INTEGER DEFAULT 1,
+        created_at TIMESTAMP
+    )''')
+    
+    # Авто-ответы
+    c.execute('''CREATE TABLE IF NOT EXISTS auto_replies (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        keyword TEXT,
+        reply TEXT,
+        is_active INTEGER DEFAULT 1,
+        created_at TIMESTAMP
+    )''')
+    
+    # Покупки услуг
+    c.execute('''CREATE TABLE IF NOT EXISTS purchases (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        service TEXT,
+        price REAL,
+        purchased_at TIMESTAMP,
+        expires_at TIMESTAMP
+    )''')
+    
+    # Промокоды
+    c.execute('''CREATE TABLE IF NOT EXISTS promo_codes (
+        id INTEGER PRIMARY KEY,
+        code TEXT UNIQUE,
+        discount_amount INTEGER,
+        min_order INTEGER,
+        is_active INTEGER DEFAULT 1,
+        created_at TIMESTAMP
+    )''')
+    
+    # Заказы (для оплаты)
+    c.execute('''CREATE TABLE IF NOT EXISTS orders (
+        id INTEGER PRIMARY KEY,
+        order_id TEXT UNIQUE,
+        user_id INTEGER,
+        amount REAL,
+        status TEXT DEFAULT 'pending',
+        payment_method TEXT,
+        created_at TIMESTAMP,
+        paid_at TIMESTAMP
+    )''')
+    
+    # Статистика
+    c.execute('''CREATE TABLE IF NOT EXISTS stats (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        type TEXT,
+        value INTEGER DEFAULT 0,
+        date TEXT
+    )''')
+    
+    # Отзывы
+    c.execute('''CREATE TABLE IF NOT EXISTS reviews (
+        id INTEGER PRIMARY KEY,
+        name TEXT,
+        text TEXT,
+        rating INTEGER,
+        date TEXT
+    )''')
+    
+    conn.commit()
+    
+    # Добавляем тестовые аккаунты
+    c.execute("SELECT COUNT(*) FROM tg_accounts")
+    if c.fetchone()[0] == 0:
+        test_accounts = [
+            ("Алексей К.", "+7 (999) 123-45-67", "@alex_k", "Админ", "Активный"),
+            ("Мария С.", "+7 (999) 234-56-78", "@maria_s", "Писатель", "Активный"),
+            ("Дмитрий В.", "+7 (999) 345-67-89", "@dm_v", "Писатель", "На карантине"),
+            ("Анна П.", "+7 (999) 456-78-90", "@anna_p", "Писатель", "Активный"),
+            ("Иван Р.", "+7 (999) 567-89-01", "@ivan_r", "Писатель", "Заморожен"),
+        ]
+        for acc in test_accounts:
+            c.execute("""INSERT INTO tg_accounts (user_id, first_name, phone, username, role, status, added_at)
+                         VALUES (1, ?, ?, ?, ?, ?, ?)""",
+                      (acc[0], acc[1], acc[2], acc[3], acc[4], datetime.now()))
+    
+    # Генерируем промокоды
+    c.execute("SELECT COUNT(*) FROM promo_codes")
+    if c.fetchone()[0] == 0:
+        promo_data = [
+            *[{"code": f"PROMO10_{i+1}", "discount": 1000, "min_order": 2000} for i in range(10)],
+            *[{"code": f"PROMO15_{i+1}", "discount": 1000, "min_order": 1000} for i in range(15)],
+            *[{"code": f"PROMO5_{i+1}", "discount": 2000, "min_order": 3000} for i in range(5)]
+        ]
+        for p in promo_data:
+            c.execute("INSERT INTO promo_codes (code, discount_amount, min_order, created_at) VALUES (?, ?, ?, ?)",
+                      (p["code"], p["discount"], p["min_order"], datetime.now()))
+    
+    # Добавляем отзывы (200+)
+    c.execute("SELECT COUNT(*) FROM reviews")
+    if c.fetchone()[0] == 0:
+        names = [
+            "Алексей К.", "Мария С.", "Дмитрий В.", "Анна П.", "Иван Р.",
+            "Ольга Н.", "Сергей М.", "Елена Т.", "Павел З.", "Никита Б.",
+            "Андрей К.", "Виктория Д.", "Максим Г.", "Екатерина Л.", "Артём Ф.",
+            "Алина Р.", "Владимир Ш.", "Кристина М.", "Евгений Т.", "Татьяна К.",
+            "Григорий С.", "Наталья П.", "Роман Б.", "Юлия Д.", "Станислав К.",
+            "Оксана Ч.", "Антон К.", "Светлана М.", "Василий Г.", "Надежда В.",
+            "Александр П.", "София Л.", "Денис Н.", "Анастасия Е.", "Виктор Р.",
+            "Игорь С.", "Людмила К.", "Михаил Д.", "Олег Н.", "Екатерина З."
+        ]
+        review_texts = [
+            "Отличный сервис! Пользуюсь уже месяц, прогреваю аккаунты. Результат реально есть — подписчики растут каждый день! 🔥",
+            "Лучший комбайн для Telegram! Нейрокомментинг работает просто шикарно — комментарии как живые. Рекомендую всем! 👍",
+            "Сначала не верил, но решил попробовать. За 2 недели +500 подписчиков в канале. Это просто бомба! 💣",
+            "Отличная поддержка! Всегда отвечают быстро, помогают с настройкой. Сервис на высшем уровне! ⭐",
+            "Парсинг каналов работает отлично — собрал базу из 1000 каналов за пару дней. Очень доволен! 📡",
+            "Прогрев аккаунтов просто супер! Аккаунты выглядят как живые, ни одного бана за месяц. Рекомендую! 🚀",
+            "Использую уже 3 месяца. Доход с каналов вырос в 3 раза. Спасибо разработчикам! 💰",
+            "Очень удобный интерфейс! Всё понятно даже новичку. За день разобрался и запустил прогрев. Спасибо! 🤗",
+            "Лучшее решение для продвижения Telegram каналов. Экономит кучу времени и денег. Топ! 🔥",
+            "Нейрокомментинг — это просто магия! Комментарии выглядят как от живых людей, никто не банит. Спасибо! ✨",
+            "Парсинг пользователей нашёл мне 500+ подписчиков за день. Очень мощный инструмент! 💪",
+            "Первое впечатление — вау! Всё работает быстро и стабильно. Обязательно продолжу пользоваться! 🌟",
+            "Отличный сервис! Уже привлёк 1000+ подписчиков через массреакции. Результат виден сразу! 📈",
+            "Спасибо за авто-воронки! Сделали отдел продаж на автопилоте. Лиды идут каждый день! 🎯",
+            "Лучший инструмент для арбитража трафика. Окупился за первую неделю. Всем советую! 💎",
+            "Очень нравится, что всё в одном месте. Не нужно покупать 5 разных сервисов. Супер! 🌈",
+            "Реальный результат! За месяц поднял канал с 0 до 5000 подписчиков. Без вложений в рекламу! 🚀",
+            "Поддержка отвечает за 2 минуты! Это очень круто. И все вопросы решают быстро. Молодцы! 👏",
+            "Нейрокомментинг работает безотказно. 100+ комментариев в день — и никаких банов! Магия? 😁",
+            "Использую парсинг каналов для сбора базы. Нашла 300 каналов для своей ниши за 2 дня. Благодарю! 🙏",
+            "Прогрев аккаунтов — это то, что нужно! Аккаунты становятся живыми за пару дней. Очень доволен! 🔥",
+            "Удобный дашборд, всё интуитивно понятно. Никакой сложности. Рекомендую для новичков! 📊",
+            "Сервис реально работает! Я скептик, но результат превзошёл ожидания. Буду покупать расширенный тариф! 💯",
+            "Очень рада, что нашла этот сервис. Теперь мой канал растёт сам собой. Спасибо большое! ❤️",
+            "Лучшая инвестиция в Telegram! Окупилось за 3 дня. Продолжаю работать. Всем советую! 💰",
+            "Планировщик постов — просто находка! Планирую на неделю вперёд и забываю про рутину. Отлично! 📅",
+            "Парсинг чатов открыл мне новые возможности. Нашёл крутые группы для продвижения. Спасибо! 👍",
+            "Подписка на месяц окупилась за первую неделю. Реальный результат — +2000 подписчиков. Супер! 💪",
+            "Очень мощный инструмент! Использую для нескольких проектов одновременно. Всё работает стабильно. 🚀",
+            "Авто-воронки сделали продажи автоматическими. Лучшее решение для бизнеса в Telegram! 🎯",
+            "Ребята, вы сделали крутой продукт! Буду рекомендовать партнёрам. Всех благ! 🌟",
+            "Нейрокомментинг — это любовь! Подписчики думают, что я сижу и отвечаю сама, а это ИИ 😍",
+            "Использую массреакции — канал взлетел. Реакции повышают охваты и доверие. Рекомендую! 🔥",
+            "Сервис просто бомба! За месяц прошла путь от 0 до 3000 подписчиков. Спасибо разработчикам! 💎",
+            "GGR проверка — спасение! Отсеиваю мёртвые аккаунты и работаю только с живыми. Экономия времени! ⏰"
+        ]
+        now = datetime.now()
+        for i in range(200):
+            name = random.choice(names)
+            text = random.choice(review_texts)
+            rating = random.choice([5, 5, 5, 5, 4])
+            date = (now - timedelta(days=random.randint(1, 180))).strftime("%Y-%m-%d")
+            c.execute("INSERT INTO reviews (name, text, rating, date) VALUES (?, ?, ?, ?)",
+                      (name, text, rating, date))
+    
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+# =============================================
+# ===== API =====
+# =============================================
+
+@app.post("/api/register")
+async def register(data: dict):
+    email = data.get('email')
+    password = data.get('password')
+    name = data.get('name')
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT id FROM users WHERE email = ?", (email,))
+    if c.fetchone():
+        conn.close()
+        return {"success": False, "error": "Пользователь уже существует"}
+    
+    c.execute("INSERT INTO users (email, password, name, created_at, balance) VALUES (?, ?, ?, ?, 0)",
+              (email, hash_password(password), name, datetime.now()))
+    conn.commit()
+    conn.close()
+    return {"success": True, "message": "Регистрация успешна!"}
+
+@app.post("/api/login")
+async def login(data: dict):
+    email = data.get('email')
+    password = data.get('password')
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT id, name, subscription_type, balance FROM users WHERE email = ? AND password = ?",
+              (email, hash_password(password)))
+    user = c.fetchone()
+    conn.close()
+    
+    if not user:
+        return {"success": False, "error": "Неверный email или пароль"}
+    
+    return {
+        "success": True,
+        "user": {
+            "id": user[0],
+            "name": user[1],
+            "email": email,
+            "subscription_type": user[2] or 'free',
+            "balance": user[3] or 0
+        }
+    }
+
+@app.post("/api/subscribe")
+async def subscribe(data: dict):
+    user_id = data.get('user_id')
+    plan = data.get('plan')
+    
+    plans = {
+        'starter': {'price': 499, 'days': 30, 'name': 'Старт'},
+        'pro': {'price': 999, 'days': 30, 'name': 'Про'},
+        'business': {'price': 3200, 'days': 30, 'name': 'Бизнес'}
+    }
+    
+    if plan not in plans:
+        return {"success": False, "error": "Неверный тариф"}
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    now = datetime.now()
+    end_date = now + timedelta(days=plans[plan]['days'])
+    
+    c.execute("UPDATE users SET subscription_type = ?, subscription_end = ? WHERE id = ?",
+              (plan, end_date.isoformat(), user_id))
+    conn.commit()
+    conn.close()
+    
+    return {"success": True, "message": f"Подписка {plans[plan]['name']} оформлена до {end_date.strftime('%d.%m.%Y')}"}
+
+@app.post("/api/apply_promo")
+async def apply_promo(data: dict):
+    code = data.get('code')
+    user_id = data.get('user_id')
+    amount = data.get('amount', 0)
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT discount_amount, min_order FROM promo_codes WHERE code = ? AND is_active = 1", (code,))
+    promo = c.fetchone()
+    
+    if not promo:
+        conn.close()
+        return {"success": False, "error": "Неверный промокод"}
+    
+    discount, min_order = promo
+    if amount < min_order:
+        conn.close()
+        return {"success": False, "error": f"Минимальная сумма для промокода: {min_order} ₽"}
+    
+    c.execute("UPDATE users SET balance = balance + ? WHERE id = ?", (discount, user_id))
+    c.execute("UPDATE promo_codes SET is_active = 0 WHERE code = ?", (code,))
+    conn.commit()
+    conn.close()
+    
+    return {"success": True, "message": f"Промокод активирован! Начислено {discount} ₽ на баланс"}
+
+@app.get("/api/promo_codes")
+async def get_promo_codes():
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT code, discount_amount, min_order FROM promo_codes WHERE is_active = 1 LIMIT 5")
+    codes = [{"code": r[0], "discount": r[1], "min_order": r[2]} for r in c.fetchall()]
+    conn.close()
+    return {"success": True, "codes": codes}
+
+@app.get("/api/accounts")
+async def get_accounts(user_id: int):
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("""SELECT id, first_name, username, phone, role, status, project, is_warmed 
+                 FROM tg_accounts WHERE user_id = ?""", (user_id,))
+    accounts = [{"id": r[0], "name": r[1] or r[3], "username": r[2] or "", "phone": r[3], 
+                 "role": r[4] or "Писатель", "status": r[5] or "Активный", "project": r[6] or "",
+                 "is_warmed": bool(r[7])} for r in c.fetchall()]
+    conn.close()
+    return {"success": True, "accounts": accounts}
+
+@app.post("/api/accounts/add")
+async def add_account(data: dict):
+    user_id = data.get('user_id')
+    name = data.get('name', '')
+    username = data.get('username', '')
+    phone = data.get('phone', '')
+    role = data.get('role', 'Писатель')
+    project = data.get('project', '')
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("""INSERT INTO tg_accounts (user_id, first_name, username, phone, role, project, status, added_at)
+                 VALUES (?, ?, ?, ?, ?, ?, 'Активный', ?)""",
+              (user_id, name, username, phone, role, project, datetime.now()))
+    account_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return {"success": True, "id": account_id, "message": "Аккаунт добавлен"}
+
+@app.post("/api/accounts/update_status")
+async def update_account_status(data: dict):
+    account_id = data.get('id')
+    status = data.get('status')
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("UPDATE tg_accounts SET status = ? WHERE id = ?", (status, account_id))
+    conn.commit()
+    conn.close()
+    return {"success": True, "message": f"Статус обновлен на {status}"}
+
+@app.post("/api/accounts/delete")
+async def delete_account(data: dict):
+    account_id = data.get('id')
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("DELETE FROM tg_accounts WHERE id = ?", (account_id,))
+    conn.commit()
+    conn.close()
+    return {"success": True, "message": "Аккаунт удален"}
+
+@app.get("/api/proxies")
+async def get_proxies(user_id: int):
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT id, ip, port, login, password, is_active FROM proxies WHERE user_id = ?", (user_id,))
+    proxies = [{"id": r[0], "ip": r[1], "port": r[2], "login": r[3] or "", "password": r[4] or "", "is_active": bool(r[5])} for r in c.fetchall()]
+    conn.close()
+    return {"success": True, "proxies": proxies}
+
+@app.post("/api/proxies/add")
+async def add_proxy(data: dict):
+    user_id = data.get('user_id')
+    ip = data.get('ip')
+    port = data.get('port')
+    login = data.get('login', '')
+    password = data.get('password', '')
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("""INSERT INTO proxies (user_id, ip, port, login, password, is_active, created_at)
+                 VALUES (?, ?, ?, ?, ?, 1, ?)""",
+              (user_id, ip, port, login, password, datetime.now()))
+    proxy_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return {"success": True, "id": proxy_id, "message": "Прокси добавлен"}
+
+@app.post("/api/proxies/delete")
+async def delete_proxy(data: dict):
+    proxy_id = data.get('id')
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("DELETE FROM proxies WHERE id = ?", (proxy_id,))
+    conn.commit()
+    conn.close()
+    return {"success": True, "message": "Прокси удален"}
+
+@app.get("/api/stats")
+async def get_stats(user_id: int):
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    
+    statuses = ["Активный", "В работе", "На карантине", "Спам-блок", "Невалидный", "Заморожен"]
+    stats = {}
+    for status in statuses:
+        c.execute("SELECT COUNT(*) FROM tg_accounts WHERE user_id = ? AND status = ?", (user_id, status))
+        stats[status] = c.fetchone()[0] or 0
+    
+    c.execute("SELECT COUNT(*) FROM tg_accounts WHERE user_id = ? AND role = 'Реабиторий'", (user_id,))
+    stats["реабиторий"] = c.fetchone()[0] or 0
+    c.execute("SELECT COUNT(*) FROM tg_accounts WHERE user_id = ? AND role = 'Писатель'", (user_id,))
+    stats["писатели"] = c.fetchone()[0] or 0
+    c.execute("SELECT COUNT(*) FROM proxies WHERE user_id = ? AND is_active = 1", (user_id,))
+    stats["active_proxies"] = c.fetchone()[0] or 0
+    c.execute("SELECT COUNT(*) FROM purchases WHERE user_id = ?", (user_id,))
+    stats["purchases"] = c.fetchone()[0] or 0
+    c.execute("SELECT balance FROM users WHERE id = ?", (user_id,))
+    stats["balance"] = c.fetchone()[0] or 0
+    c.execute("SELECT COUNT(*) FROM posts WHERE user_id = ?", (user_id,))
+    stats["posts"] = c.fetchone()[0] or 0
+    c.execute("SELECT COUNT(*) FROM comments WHERE user_id = ?", (user_id,))
+    stats["comments"] = c.fetchone()[0] or 0
+    
+    conn.close()
+    return {"success": True, "stats": stats}
+
+@app.post("/api/comment/send")
+async def send_comment(data: dict):
+    user_id = data.get('user_id')
+    account_id = data.get('account_id')
+    channel = data.get('channel')
+    text = data.get('text')
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT subscription_type FROM users WHERE id = ?", (user_id,))
+    sub = c.fetchone()
+    
+    if not sub or sub[0] == 'free':
+        conn.close()
+        return {"success": False, "error": "Требуется подписка Про или Бизнес"}
+    
+    c.execute("INSERT INTO comments (user_id, account_id, channel_id, text, status, created_at) VALUES (?, ?, ?, ?, 'success', ?)",
+              (user_id, account_id, channel, text, datetime.now()))
+    conn.commit()
+    conn.close()
+    
+    return {"success": True, "message": f"💬 Комментарий отправлен в {channel}"}
+
+@app.get("/api/comments")
+async def get_comments(user_id: int):
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT id, account_id, channel_id, text, status, created_at FROM comments WHERE user_id = ? ORDER BY created_at DESC LIMIT 50",
+              (user_id,))
+    comments = [{"id": r[0], "account_id": r[1], "channel": r[2], "text": r[3], "status": r[4], "created_at": r[5]} for r in c.fetchall()]
+    conn.close()
+    return {"success": True, "comments": comments}
+
+@app.post("/api/reactions/send")
+async def send_reactions(data: dict):
+    user_id = data.get('user_id')
+    account_id = data.get('account_id')
+    channel = data.get('channel')
+    count = data.get('count', 10)
+    reaction_type = data.get('type', '🔥')
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT subscription_type FROM users WHERE id = ?", (user_id,))
+    sub = c.fetchone()
+    
+    if not sub or sub[0] == 'free':
+        conn.close()
+        return {"success": False, "error": "Требуется подписка Про или Бизнес"}
+    
+    c.execute("INSERT INTO reactions (user_id, account_id, channel_id, count, created_at) VALUES (?, ?, ?, ?, ?)",
+              (user_id, account_id, channel, count, datetime.now()))
+    conn.commit()
+    conn.close()
+    
+    return {"success": True, "message": f"🔥 Отправлено {count} реакций {reaction_type} в {channel}"}
+
+@app.post("/api/warmup/start")
+async def start_warmup(data: dict):
+    user_id = data.get('user_id')
+    account_id = data.get('account_id')
+    level = data.get('level', 1)
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT subscription_type FROM users WHERE id = ?", (user_id,))
+    sub = c.fetchone()
+    
+    if not sub or sub[0] == 'free':
+        conn.close()
+        return {"success": False, "error": "Требуется подписка Про или Бизнес"}
+    
+    levels = {
+        1: {"views": 50, "likes": 10, "msgs": 3, "name": "Мягкий"},
+        2: {"views": 200, "likes": 50, "msgs": 10, "name": "Средний"},
+        3: {"views": 500, "likes": 150, "msgs": 30, "name": "Интенсивный"}
+    }
+    
+    warmup_data = levels.get(level, levels[1])
+    c.execute("UPDATE tg_accounts SET is_warmed = 1 WHERE id = ?", (account_id,))
+    conn.commit()
+    conn.close()
+    
+    return {"success": True, "message": f"⚡ Прогрев {warmup_data['name']} запущен", "data": warmup_data}
+
+@app.post("/api/parse/channels")
+async def parse_channels(data: dict):
+    user_id = data.get('user_id')
+    query = data.get('query', '')
+    limit = data.get('limit', 50)
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT subscription_type FROM users WHERE id = ?", (user_id,))
+    sub = c.fetchone()
+    
+    if not sub or sub[0] == 'free':
+        conn.close()
+        return {"success": False, "error": "Требуется подписка Про или Бизнес"}
+    
+    conn.close()
+    
+    results = []
+    for i in range(min(limit, 20)):
+        results.append({
+            "id": i + 1,
+            "name": f"Канал {i+1}",
+            "username": f"@{query}_{i+1}" if query else f"channel_{i+1}",
+            "subscribers": random.randint(100, 50000),
+            "posts": random.randint(10, 1000)
+        })
+    
+    return {"success": True, "results": results, "count": len(results)}
+
+@app.post("/api/parse/users")
+async def parse_users(data: dict):
+    user_id = data.get('user_id')
+    channel = data.get('channel', '')
+    limit = data.get('limit', 50)
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT subscription_type FROM users WHERE id = ?", (user_id,))
+    sub = c.fetchone()
+    
+    if not sub or sub[0] == 'free':
+        conn.close()
+        return {"success": False, "error": "Требуется подписка Про или Бизнес"}
+    
+    conn.close()
+    
+    users = []
+    for i in range(min(limit, 20)):
+        users.append({
+            "id": i + 1,
+            "name": f"User_{i+1}",
+            "username": f"user_{i+1}",
+            "phone": f"+7 (999) {random.randint(100,999)}-{random.randint(10,99)}-{random.randint(10,99)}",
+            "is_active": random.choice([True, True, True, False])
+        })
+    
+    return {"success": True, "users": users, "count": len(users)}
+
+@app.post("/api/dialogs/start")
+async def start_dialog(data: dict):
+    user_id = data.get('user_id')
+    account_id = data.get('account_id')
+    chat_id = data.get('chat_id')
+    chat_name = data.get('chat_name')
+    message = data.get('message')
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT subscription_type FROM users WHERE id = ?", (user_id,))
+    sub = c.fetchone()
+    
+    if not sub or sub[0] == 'free':
+        conn.close()
+        return {"success": False, "error": "Требуется подписка Про или Бизнес"}
+    
+    c.execute("""INSERT INTO dialogs (user_id, account_id, chat_id, chat_name, last_message, status, created_at)
+                 VALUES (?, ?, ?, ?, ?, 'active', ?)""",
+              (user_id, account_id, chat_id, chat_name, message, datetime.now()))
+    dialog_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    
+    return {"success": True, "id": dialog_id, "message": "💬 Диалог начат"}
+
+@app.post("/api/dialogs/send")
+async def send_dialog_message(data: dict):
+    user_id = data.get('user_id')
+    dialog_id = data.get('dialog_id')
+    message = data.get('message')
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT subscription_type FROM users WHERE id = ?", (user_id,))
+    sub = c.fetchone()
+    
+    if not sub or sub[0] == 'free':
+        conn.close()
+        return {"success": False, "error": "Требуется подписка Про или Бизнес"}
+    
+    c.execute("UPDATE dialogs SET last_message = ? WHERE id = ?", (message, dialog_id))
+    conn.commit()
+    conn.close()
+    
+    return {"success": True, "message": "💬 Сообщение отправлено"}
+
+@app.get("/api/dialogs")
+async def get_dialogs(user_id: int):
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT id, account_id, chat_id, chat_name, last_message, status, created_at FROM dialogs WHERE user_id = ?",
+              (user_id,))
+    dialogs = [{"id": r[0], "account_id": r[1], "chat_id": r[2], "chat_name": r[3], "last_message": r[4], "status": r[5], "created_at": r[6]} for r in c.fetchall()]
+    conn.close()
+    return {"success": True, "dialogs": dialogs}
+
+@app.post("/api/funnel/save")
+async def save_funnel(data: dict):
+    user_id = data.get('user_id')
+    name = data.get('name', 'Новая воронка')
+    steps = data.get('steps', [])
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT subscription_type FROM users WHERE id = ?", (user_id,))
+    sub = c.fetchone()
+    
+    if not sub or sub[0] == 'free':
+        conn.close()
+        return {"success": False, "error": "Требуется подписка Про или Бизнес"}
+    
+    c.execute("INSERT INTO funnels (user_id, name, steps, is_active, created_at) VALUES (?, ?, ?, 1, ?)",
+              (user_id, name, json.dumps(steps), datetime.now()))
+    funnel_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    
+    return {"success": True, "id": funnel_id, "message": f"✅ Воронка '{name}' сохранена"}
+
+@app.get("/api/funnels")
+async def get_funnels(user_id: int):
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT id, name, steps, is_active, created_at FROM funnels WHERE user_id = ?", (user_id,))
+    funnels = [{"id": r[0], "name": r[1], "steps": json.loads(r[2]), "is_active": bool(r[3]), "created_at": r[4]} for r in c.fetchall()]
+    conn.close()
+    return {"success": True, "funnels": funnels}
+
+@app.post("/api/schedule/post")
+async def schedule_post(data: dict):
+    user_id = data.get('user_id')
+    text = data.get('text')
+    tone = data.get('tone', 'информационный')
+    scheduled_at = data.get('scheduled_at')
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT subscription_type FROM users WHERE id = ?", (user_id,))
+    sub = c.fetchone()
+    
+    if not sub or sub[0] == 'free':
+        conn.close()
+        return {"success": False, "error": "Требуется подписка Про или Бизнес"}
+    
+    scheduled = datetime.fromisoformat(scheduled_at) if scheduled_at else datetime.now() + timedelta(hours=1)
+    c.execute("""INSERT INTO posts (user_id, text, tone, scheduled_at, created_at)
+                 VALUES (?, ?, ?, ?, ?)""",
+              (user_id, text, tone, scheduled, datetime.now()))
+    post_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    
+    return {"success": True, "id": post_id, "message": f"📅 Пост запланирован на {scheduled.strftime('%d.%m.%Y %H:%M')}"}
+
+@app.get("/api/posts")
+async def get_posts(user_id: int):
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT id, text, tone, scheduled_at, is_published, created_at FROM posts WHERE user_id = ? ORDER BY scheduled_at DESC",
+              (user_id,))
+    posts = [{"id": r[0], "text": r[1], "tone": r[2], "scheduled_at": r[3], "is_published": bool(r[4]), "created_at": r[5]} for r in c.fetchall()]
+    conn.close()
+    return {"success": True, "posts": posts}
+
+@app.post("/api/mailing/send")
+async def send_mailing(data: dict):
+    user_id = data.get('user_id')
+    channel = data.get('channel')
+    text = data.get('text')
+    count = data.get('count', 10)
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT subscription_type FROM users WHERE id = ?", (user_id,))
+    sub = c.fetchone()
+    
+    if not sub or sub[0] == 'free':
+        conn.close()
+        return {"success": False, "error": "Требуется подписка Про или Бизнес"}
+    
+    conn.close()
+    
+    return {"success": True, "message": f"📨 Рассылка запущена в {channel} ({count} сообщений)"}
+
+@app.post("/api/auto_replies/add")
+async def add_auto_reply(data: dict):
+    user_id = data.get('user_id')
+    keyword = data.get('keyword')
+    reply = data.get('reply')
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT subscription_type FROM users WHERE id = ?", (user_id,))
+    sub = c.fetchone()
+    
+    if not sub or sub[0] == 'free':
+        conn.close()
+        return {"success": False, "error": "Требуется подписка Про или Бизнес"}
+    
+    c.execute("INSERT INTO auto_replies (user_id, keyword, reply, is_active, created_at) VALUES (?, ?, ?, 1, ?)",
+              (user_id, keyword.lower(), reply, datetime.now()))
+    reply_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    
+    return {"success": True, "id": reply_id, "message": f"🤖 Авто-ответ на '{keyword}' добавлен"}
+
+@app.get("/api/auto_replies")
+async def get_auto_replies(user_id: int):
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT id, keyword, reply, is_active, created_at FROM auto_replies WHERE user_id = ?", (user_id,))
+    replies = [{"id": r[0], "keyword": r[1], "reply": r[2], "is_active": bool(r[3]), "created_at": r[4]} for r in c.fetchall()]
+    conn.close()
+    return {"success": True, "replies": replies}
+
+@app.post("/api/auto_replies/delete")
+async def delete_auto_reply(data: dict):
+    reply_id = data.get('id')
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("DELETE FROM auto_replies WHERE id = ?", (reply_id,))
+    conn.commit()
+    conn.close()
+    return {"success": True, "message": "Авто-ответ удален"}
+
+@app.post("/api/generate")
+async def generate(data: dict):
+    theme = data.get('theme', 'бизнес')
+    tone = data.get('tone', 'мотивирующий')
+    posts = {
+        "мотивирующий": [
+            f"🔥 {theme} — твой путь к успеху!\\n\\nКаждый день — шанс стать лучше.",
+            f"💪 {theme} выбирают сильные!\\n\\n90% мечтают, 10% действуют."
+        ],
+        "экспертный": [
+            f"📊 {theme}: профессиональный разбор\\n\\n3 ключевых правила:\\n1️⃣ Планирование\\n2️⃣ Исполнение\\n3️⃣ Анализ",
+            f"🎓 {theme}: чек-лист эксперта\\n\\n✅ Стратегия\\n✅ Система\\n✅ Регулярность"
+        ],
+        "продающий": [
+            f"💰 {theme}: специальное предложение!\\n\\nСтоимость: 4990₽\\n\\nПиши 'ХОЧУ'!",
+            f"🚀 {theme}: успей!\\n\\nОсталось 5 мест."
+        ],
+        "информационный": [
+            f"📰 {theme}: главное\\n\\n1. {theme} — это база\\n2. Регулярность даёт результат",
+            f"📚 {theme}: топ-5 правил\\n\\n1️⃣ Начни с малого\\n2️⃣ Учись у профи"
+        ]
+    }
+    tone_posts = posts.get(tone, posts["информационный"])
+    return {"success": True, "post": random.choice(tone_posts)}
+
+@app.post("/api/ideas")
+async def ideas(data: dict):
+    theme = data.get('theme', 'бизнес')
+    return {"success": True, "ideas": [
+        f"📌 Мой путь в {theme} с нуля",
+        f"📌 5 ошибок новичков в {theme}",
+        f"📌 Топ-10 инструментов для {theme}",
+        f"📌 Кейс: +300% результата",
+        f"📌 Бесплатный чек-лист для {theme}"
+    ]}
+
+@app.post("/api/chat")
+async def chat(data: dict):
+    responses = [
+        "Отличный вопрос! 👏 Давай разберёмся.",
+        "Хорошая мысль! 👍 Предложу план.",
+        "Ты на правильном пути! 🔥 Продолжай!",
+        "Интересно! 😊 Подскажу идеи.",
+        "Понял! 🎯 Вот что предлагаю.",
+        "Здорово! 💡 Сейчас объясню."
+    ]
+    return {"success": True, "response": random.choice(responses)}
+
+@app.get("/api/reviews")
+async def get_reviews():
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT name, text, rating, date FROM reviews ORDER BY RANDOM() LIMIT 6")
+    reviews = [{"name": r[0], "text": r[1], "rating": r[2], "date": r[3]} for r in c.fetchall()]
+    conn.close()
+    return {"success": True, "reviews": reviews}
+
+# ===== ОПЛАТА (ЮMoney) =====
+@app.post("/api/create_payment")
+async def create_payment(data: dict):
+    user_id = data.get('user_id')
+    amount = data.get('amount', 0)
+    service = data.get('service', 'Оплата услуг Telegrams GPT')
+    
+    if amount <= 0:
+        return {"success": False, "error": "Сумма должна быть больше 0"}
+    
+    order_id = f"TG-{datetime.now().strftime('%Y%m%d')}-{random.randint(1000, 9999)}"
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("INSERT INTO orders (order_id, user_id, amount, status, created_at) VALUES (?, ?, ?, 'pending', ?)",
+              (order_id, user_id, amount, datetime.now()))
+    conn.commit()
+    conn.close()
+    
+    # Генерируем ссылку на оплату через ЮMoney
+    payment_url = f"https://yoomoney.ru/quickpay/confirm.xml"
+    payment_params = {
+        "receiver": "4100119492575961",
+        "quickpay-form": "shop",
+        "targets": service,
+        "paymentType": "SB",
+        "sum": amount,
+        "label": order_id
+    }
+    
+    return {
+        "success": True,
+        "order_id": order_id,
+        "amount": amount,
+        "payment_url": payment_url,
+        "params": payment_params
+    }
+
+@app.get("/api/order_status/{order_id}")
+async def get_order_status(order_id: str):
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT status, paid_at FROM orders WHERE order_id = ?", (order_id,))
+    order = c.fetchone()
+    conn.close()
+    
+    if not order:
+        return {"success": False, "error": "Заказ не найден"}
+    
+    return {
+        "success": True,
+        "status": order[0],
+        "paid_at": order[1]
+    }
+
+@app.post("/api/confirm_payment")
+async def confirm_payment(data: dict):
+    order_id = data.get('order_id')
+    user_id = data.get('user_id')
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("UPDATE orders SET status = 'paid', paid_at = ? WHERE order_id = ?", (datetime.now(), order_id))
+    c.execute("UPDATE users SET balance = balance + (SELECT amount FROM orders WHERE order_id = ?) WHERE id = ?",
+              (order_id, user_id))
+    conn.commit()
+    conn.close()
+    
+    return {"success": True, "message": "Платеж подтвержден! Баланс пополнен"}
+
+# =============================================
+# ===== ГЛАВНАЯ СТРАНИЦА =====
+# =============================================
+
+@app.get("/")
+async def root():
+    return HTMLResponse("""
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Telegrams GPT — Умный комбайн для Telegram</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
+
+        * { margin:0; padding:0; box-sizing:border-box; }
+        body { background:#080C14; color:#E8EDF5; font-family:'Space Grotesk',sans-serif; overflow-x:hidden; }
+
+        :root {
+            --bg: #080C14;
+            --bg2: #0D1321;
+            --bg3: #111827;
+            --card: #131D2E;
+            --border: #1E2D45;
+            --accent: #2B7FFF;
+            --accent2: #7B3FFF;
+            --glow: rgba(43,127,255,0.18);
+            --text: #E8EDF5;
+            --muted: #5B7296;
+            --green: #00D97E;
+            --yellow: #FFB800;
+            --red: #FF4D6A;
+        }
+
+        nav {
+            position:fixed; top:0; left:0; right:0; z-index:100;
+            display:flex; align-items:center; justify-content:space-between;
+            padding:0 40px; height:64px;
+            background:rgba(8,12,20,0.88); backdrop-filter:blur(18px);
+            border-bottom:1px solid var(--border);
+        }
+        .logo { 
+            font-family:'Space Mono',monospace; font-size:18px; font-weight:700;
+            background:linear-gradient(135deg,var(--accent),var(--accent2));
+            -webkit-background-clip:text; -webkit-text-fill-color:transparent; 
+            letter-spacing:-.5px;
+            display:flex; align-items:center; gap:10px;
+        }
+        .logo img {
+            height:36px;
+            width:auto;
+            display:block;
+        }
+        .logo span { -webkit-text-fill-color:var(--text); }
+        nav ul { display:flex; gap:28px; list-style:none; }
+        nav ul a { color:var(--muted); text-decoration:none; font-size:14px; font-weight:500; transition:.2s; }
+        nav ul a:hover { color:var(--text); }
+        .nav-btn { background:var(--accent); color:#fff; border:none; border-radius:8px;
+            padding:8px 20px; font-size:14px; font-weight:600; cursor:pointer; transition:.2s; font-family:inherit; }
+        .nav-btn:hover { background:#1a6ee8; transform:translateY(-1px); }
+        .nav-user { display: none; align-items: center; gap: 12px; }
+        .nav-user.show { display: flex; }
+        .nav-user span { color: var(--text); font-size: 14px; font-weight: 500; }
+        .nav-user .logout { color: var(--muted); cursor: pointer; font-size: 13px; }
+        .nav-user .logout:hover { color: var(--red); }
+
+        .hero {
+            min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center;
+            text-align:center; padding:100px 40px 60px; position:relative; overflow:hidden; }
+        .hero-grid { position:absolute; inset:0;
+            background-image:linear-gradient(var(--border) 1px,transparent 1px),linear-gradient(90deg,var(--border) 1px,transparent 1px);
+            background-size:60px 60px; opacity:.35;
+            mask-image:radial-gradient(ellipse 80% 60% at 50% 40%,black 40%,transparent 100%); }
+        .hero-glow { position:absolute; width:700px; height:700px;
+            background:radial-gradient(circle,rgba(43,127,255,0.12) 0%,transparent 70%);
+            top:50%; left:50%; transform:translate(-50%,-60%); pointer-events:none; }
+        .badge { display:inline-flex; align-items:center; gap:8px;
+            background:rgba(43,127,255,0.1); border:1px solid rgba(43,127,255,0.3);
+            border-radius:20px; padding:6px 16px; font-size:13px; color:var(--accent);
+            font-family:'Space Mono',monospace; margin-bottom:28px; position:relative; }
+        .badge::before { content:'●'; color:var(--green); animation:pulse 2s infinite; }
+        @keyframes pulse { 0%,100%{opacity:1}50%{opacity:.3} }
+        h1 { font-size:clamp(38px,6vw,78px); font-weight:700; line-height:1.05; letter-spacing:-2px; position:relative; }
+        h1 .purple { background:linear-gradient(135deg,var(--accent),var(--accent2)); -webkit-background-clip:text; -webkit-text-fill-color:transparent; }
+        .hero-sub { margin-top:20px; font-size:18px; color:var(--muted); max-width:560px; line-height:1.6; position:relative; }
+        .hero-actions { display:flex; gap:16px; margin-top:40px; position:relative; flex-wrap:wrap; justify-content:center; }
+        .btn-primary { background:linear-gradient(135deg,var(--accent),var(--accent2)); color:#fff; border:none;
+            border-radius:10px; padding:14px 32px; font-size:16px; font-weight:600; cursor:pointer; transition:.2s;
+            font-family:inherit; box-shadow:0 0 30px rgba(43,127,255,0.35); }
+        .btn-primary:hover { transform:translateY(-2px); box-shadow:0 0 45px rgba(43,127,255,0.5); }
+        .btn-secondary { background:transparent; color:var(--text); border:1px solid var(--border); border-radius:10px;
+            padding:14px 32px; font-size:16px; font-weight:500; cursor:pointer; transition:.2s; font-family:inherit; }
+        .btn-secondary:hover { border-color:var(--accent); color:var(--accent); }
+        .hero-stats { display:flex; gap:40px; margin-top:60px; position:relative; flex-wrap:wrap; justify-content:center; }
+        .stat { text-align:center; }
+        .stat-num { font-family:'Space Mono',monospace; font-size:28px; font-weight:700; color:var(--accent); }
+        .stat-label { font-size:13px; color:var(--muted); margin-top:4px; }
+
+        section { padding:80px 40px; max-width:1200px; margin:0 auto; }
+        .section-label { font-family:'Space Mono',monospace; font-size:12px; color:var(--accent);
+            letter-spacing:3px; text-transform:uppercase; margin-bottom:12px; }
+        .section-title { font-size:clamp(26px,3.5vw,42px); font-weight:700; letter-spacing:-1px; margin-bottom:16px; }
+        .section-sub { color:var(--muted); font-size:16px; max-width:520px; line-height:1.6; margin-bottom:48px; }
+
+        .tools-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:20px; }
+        .tool-card { background:var(--card); border:1px solid var(--border); border-radius:16px; padding:28px;
+            transition:.3s; cursor:pointer; position:relative; overflow:hidden; }
+        .tool-card::before { content:''; position:absolute; inset:0; background:linear-gradient(135deg,var(--glow),transparent); opacity:0; transition:.3s; }
+        .tool-card:hover { border-color:var(--accent); transform:translateY(-3px); }
+        .tool-card:hover::before { opacity:1; }
+        .tool-icon { width:48px; height:48px; border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:22px; margin-bottom:16px; }
+        .tool-card h3 { font-size:17px; font-weight:600; margin-bottom:8px; }
+        .tool-card p { font-size:14px; color:var(--muted); line-height:1.6; }
+        .tool-tag { display:inline-block; margin-top:14px; background:rgba(43,127,255,0.12); color:var(--accent);
+            border-radius:6px; padding:3px 10px; font-size:12px; font-weight:600; }
+
+        .pricing-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:20px; }
+        .price-card { background:var(--card); border:1px solid var(--border); border-radius:20px; padding:32px; transition:.3s; position:relative; }
+        .price-card.popular { border-color:var(--accent); box-shadow:0 0 40px rgba(43,127,255,0.15); }
+        .popular-tag { position:absolute; top:-12px; left:50%; transform:translateX(-50%);
+            background:var(--accent); color:#fff; padding:4px 16px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap; }
+        .price-name { font-size:14px; color:var(--muted); font-weight:500; margin-bottom:12px; }
+        .price-val { font-size:42px; font-weight:700; font-family:'Space Mono',monospace; }
+        .price-val sup { font-size:20px; vertical-align:top; margin-top:8px; display:inline-block; }
+        .price-per { font-size:13px; color:var(--muted); margin-top:4px; margin-bottom:24px; }
+        .price-features { list-style:none; display:flex; flex-direction:column; gap:12px; margin-bottom:28px; }
+        .price-features li { font-size:14px; color:var(--muted); display:flex; align-items:center; gap:8px; }
+        .price-features li::before { content:'✓'; color:var(--green); font-weight:700; }
+        .price-features li.no { opacity:.4; }
+        .price-features li.no::before { content:'✗'; color:var(--muted); }
+        .price-btn { width:100%; padding:13px; border-radius:10px; font-size:15px; font-weight:600;
+            cursor:pointer; transition:.2s; font-family:inherit; border:1px solid var(--border); background:transparent; color:var(--text); }
+        .price-btn.accent { background:var(--accent); border-color:var(--accent); color:#fff; }
+        .price-btn:hover { opacity:.85; transform:translateY(-1px); }
+
+        .reviews-section {
+            max-width: 1200px; margin: 60px auto 0;
+            padding: 40px 20px;
+            border-top: 1px solid var(--border);
+            width: 100%;
+        }
+        .reviews-section h2 {
+            text-align: center;
+            font-size: 32px;
+            font-weight: 700;
+            margin-bottom: 8px;
+        }
+        .reviews-section .sub {
+            text-align: center;
+            color: var(--muted);
+            margin-bottom: 32px;
+        }
+        .reviews-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+            gap: 20px;
+        }
+        .review-card {
+            background: var(--card);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 20px;
+            transition: .3s;
+        }
+        .review-card:hover { border-color: var(--accent); }
+        .review-card .header {
+            display: flex; align-items: center; justify-content: space-between;
+            margin-bottom: 8px;
+        }
+        .review-card .name { font-weight: 600; }
+        .review-card .stars { color: #FFB800; }
+        .review-card .text { color: var(--muted); font-size: 14px; line-height: 1.6; }
+        .review-card .date { color: #3A4A6A; font-size: 12px; margin-top: 8px; }
+
+        .about-section {
+            max-width: 800px; margin: 60px auto 0;
+            padding: 40px 20px;
+            border-top: 1px solid var(--border);
+            text-align: center;
+        }
+        .about-section h2 { font-size: 32px; font-weight: 700; margin-bottom: 16px; }
+        .about-section p { color: var(--muted); font-size: 16px; line-height: 1.8; }
+        .about-section .stats {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+            gap: 20px;
+            margin-top: 24px;
+        }
+        .about-section .stat-item {
+            background: var(--card);
+            border-radius: 12px;
+            padding: 16px;
+            border: 1px solid var(--border);
+        }
+        .about-section .stat-item .num {
+            font-size: 28px; font-weight: 700;
+            color: var(--accent);
+        }
+        .about-section .stat-item .label {
+            font-size: 12px; color: var(--muted);
+            margin-top: 4px;
+        }
+
+        footer {
+            border-top: 1px solid var(--border);
+            padding: 40px;
+            text-align: center;
+            color: var(--muted);
+            font-size: 14px;
+        }
+        footer .logo { display:inline-block; margin-bottom:12px; font-size:20px; }
+        footer .company-info { font-size:11px; color:#3A4A6A; margin-top:4px; }
+
+        .modal-overlay {
+            position:fixed; inset:0; background:rgba(0,0,0,0.7); backdrop-filter:blur(8px);
+            z-index:200; display:flex; align-items:center; justify-content:center;
+            opacity:0; pointer-events:none; transition:.3s; }
+        .modal-overlay.open { opacity:1; pointer-events:all; }
+        .modal { background:var(--card); border:1px solid var(--border); border-radius:20px;
+            width:100%; max-width:420px; padding:36px; transform:scale(.95); transition:.3s; position:relative; }
+        .modal-overlay.open .modal { transform:scale(1); }
+        .modal h2 { font-size:22px; font-weight:700; margin-bottom:6px; }
+        .modal-sub { color:var(--muted); font-size:14px; margin-bottom:28px; }
+        .modal-close { position:absolute; right:20px; top:20px; background:none; border:none; color:var(--muted); font-size:22px; cursor:pointer; }
+        .tabs { display:flex; gap:0; background:var(--bg3); border-radius:10px; padding:4px; margin-bottom:24px; }
+        .tab { flex:1; padding:8px; text-align:center; border-radius:8px; cursor:pointer; font-size:14px; font-weight:500;
+            color:var(--muted); transition:.2s; border:none; background:transparent; font-family:inherit; }
+        .tab.active { background:var(--accent); color:#fff; }
+        .form-group { margin-bottom:16px; }
+        .form-group label { display:block; font-size:13px; color:var(--muted); margin-bottom:6px; }
+        .form-group input { width:100%; background:var(--bg3); border:1px solid var(--border); border-radius:10px;
+            padding:12px 16px; color:var(--text); font-family:inherit; font-size:15px; outline:none; transition:.2s; }
+        .form-group input:focus { border-color:var(--accent); }
+        .modal-btn { width:100%; padding:13px; background:linear-gradient(135deg,var(--accent),var(--accent2));
+            border:none; border-radius:10px; color:#fff; font-size:16px; font-weight:600; cursor:pointer;
+            margin-top:8px; font-family:inherit; transition:.2s; }
+        .modal-btn:hover { opacity:.9; transform:translateY(-1px); }
+        .modal-error { color: var(--red); font-size: 13px; margin-top: 8px; display: none; text-align: center; }
+        .modal-error.show { display: block; }
+        .modal-success { color: var(--green); font-size: 13px; margin-top: 8px; display: none; text-align: center; }
+        .modal-success.show { display: block; }
+
+        .toast { position:fixed; bottom:28px; right:28px; background:var(--card); border:1px solid var(--green);
+            border-radius:12px; padding:14px 20px; font-size:14px; color:var(--text); z-index:999;
+            transform:translateY(100px); opacity:0; transition:.4s; max-width:320px; }
+        .toast.show { transform:translateY(0); opacity:1; }
+
+        .panel-container { display: none; }
+        .panel-container.active { display: block; }
+        .burger-btn { display: none; background: none; border: none; color: var(--text); font-size: 28px; cursor: pointer; padding: 4px 8px; font-family: inherit; }
+        .burger-btn.show { display: block; }
+        .sidebar-panel {
+            position: fixed; top: 64px; left: -280px; width: 280px; height: calc(100vh - 64px);
+            background: var(--bg2); border-right: 1px solid var(--border);
+            padding: 20px 16px; overflow-y: auto; z-index: 50;
+            transition: left 0.3s ease;
+        }
+        .sidebar-panel.open { left: 0; }
+        .sidebar-panel .menu-label { font-size: 10px; text-transform: uppercase; color: var(--muted); letter-spacing: 1px; margin: 16px 0 8px 12px; font-weight: 600; }
+        .sidebar-panel .menu-item { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 10px; cursor: pointer; color: var(--muted); transition: 0.2s; font-size: 13px; font-weight: 500; border: none; background: none; width: 100%; text-align: left; font-family: inherit; }
+        .sidebar-panel .menu-item:hover { background: rgba(43,127,255,0.08); color: var(--text); }
+        .sidebar-panel .menu-item.active { background: rgba(43,127,255,0.15); color: var(--accent); }
+        .sidebar-panel .menu-item .icon { font-size: 18px; width: 24px; }
+
+        .panel-main { display: none; padding: 20px 28px; margin-top: 64px; min-height: calc(100vh - 64px); background: var(--bg); }
+        .panel-main.active { display: block; }
+        .panel-topbar {
+            display: flex; align-items: center; gap: 16px;
+            padding-bottom: 16px; border-bottom: 1px solid var(--border);
+            margin-bottom: 20px; flex-wrap: wrap;
+        }
+        .panel-topbar h1 { font-size: 22px; font-weight: 700; }
+
+        .stats-grid-panel {
+            display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+            gap: 10px; margin-bottom: 20px;
+        }
+        .stat-card-panel {
+            background: var(--bg2); border: 1px solid var(--border);
+            border-radius: 12px; padding: 14px; text-align: center;
+        }
+        .stat-card-panel .num { font-size: 22px; font-weight: 800; color: var(--accent); }
+        .stat-card-panel .label { font-size: 11px; color: var(--muted); margin-top: 2px; }
+        .stat-card-panel .num.green { color: var(--green); }
+        .stat-card-panel .num.yellow { color: var(--yellow); }
+        .stat-card-panel .num.red { color: var(--red); }
+
+        .table-wrap-panel {
+            background: var(--bg2); border: 1px solid var(--border);
+            border-radius: 16px; overflow: hidden;
+        }
+        .table-header-panel {
+            display: flex; justify-content: space-between; align-items: center;
+            padding: 14px 20px; border-bottom: 1px solid var(--border);
+            flex-wrap: wrap; gap: 10px;
+        }
+        .table-header-panel h3 { font-size: 15px; font-weight: 600; }
+        table { width: 100%; border-collapse: collapse; font-size: 13px; }
+        th { text-align: left; padding: 10px 16px; color: var(--muted); font-weight: 500; font-size: 11px; text-transform: uppercase; border-bottom: 1px solid var(--border); }
+        td { padding: 10px 16px; border-bottom: 1px solid var(--border); }
+        tr:last-child td { border-bottom: none; }
+
+        .btn-sm { padding: 6px 14px; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; border: none; font-family: inherit; background: var(--accent); color: #fff; }
+        .btn-sm:hover { opacity: 0.85; }
+        .btn-sm.outline { background: transparent; color: var(--text); border: 1px solid var(--border); }
+        .btn-sm.outline:hover { border-color: var(--accent); color: var(--accent); }
+        .btn-sm.green { background: var(--green); color: #fff; }
+        .btn-sm.green:hover { opacity: 0.85; }
+        .btn-sm.red { background: var(--red); color: #fff; }
+        .btn-sm.red:hover { opacity: 0.85; }
+
+        .status-badge {
+            padding: 2px 10px; border-radius: 20px;
+            font-size: 11px; font-weight: 500; display: inline-block;
+        }
+        .status-active { background: rgba(0,217,126,0.15); color: var(--green); }
+        .status-quarantine { background: rgba(255,217,61,0.15); color: var(--yellow); }
+        .status-frozen { background: rgba(255,77,106,0.15); color: var(--red); }
+        .status-spam { background: rgba(255,77,106,0.08); color: #ff6b81; }
+        .status-working { background: rgba(43,127,255,0.15); color: var(--accent); }
+
+        .avatar-circle {
+            width: 32px; height: 32px; border-radius: 50%;
+            display: inline-flex; align-items: center; justify-content: center;
+            font-weight: 600; font-size: 13px; color: #fff; flex-shrink: 0;
+        }
+        .td-user { display: flex; align-items: center; gap: 10px; }
+        .td-user .info .name { font-weight: 600; font-size: 13px; }
+        .td-user .info .username { font-size: 11px; color: var(--muted); }
+        .role-badge {
+            padding: 2px 10px; border-radius: 12px;
+            font-size: 10px; font-weight: 600;
+            background: rgba(43,127,255,0.1); color: var(--accent2);
+        }
+
+        .subscription-section {
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 20px;
+            margin-bottom: 20px;
+        }
+        .subscription-section .current {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 12px;
+        }
+        .subscription-section .current .plan {
+            font-size: 18px;
+            font-weight: 700;
+        }
+        .subscription-section .current .status {
+            padding: 4px 16px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        .subscription-section .current .status.active { background: rgba(0,217,126,0.15); color: var(--green); }
+        .subscription-section .current .status.inactive { background: rgba(255,77,106,0.15); color: var(--red); }
+        .promo-input {
+            display: flex;
+            gap: 10px;
+            margin-top: 12px;
+            flex-wrap: wrap;
+        }
+        .promo-input input {
+            flex: 1;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 8px 14px;
+            color: var(--text);
+            font-family: inherit;
+            font-size: 14px;
+            outline: none;
+            min-width: 150px;
+        }
+        .promo-input input:focus { border-color: var(--accent); }
+        .promo-input button { flex: 0 0 auto; }
+
+        .payment-section {
+            background: var(--bg2);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+            padding: 20px;
+            margin-top: 16px;
+        }
+        .payment-section .amount-input {
+            display: flex;
+            gap: 10px;
+            align-items: center;
+            flex-wrap: wrap;
+        }
+        .payment-section .amount-input input {
+            flex: 1;
+            background: var(--bg);
+            border: 1px solid var(--border);
+            border-radius: 8px;
+            padding: 10px 14px;
+            color: var(--text);
+            font-family: inherit;
+            font-size: 16px;
+            font-weight: 600;
+            outline: none;
+            min-width: 120px;
+        }
+        .payment-section .amount-input input:focus { border-color: var(--accent); }
+        .payment-section .btn-pay {
+            background: linear-gradient(135deg, var(--green), #00b894);
+            color: #fff;
+            border: none;
+            padding: 10px 24px;
+            border-radius: 8px;
+            font-size: 14px;
+            font-weight: 700;
+            cursor: pointer;
+            transition: .2s;
+            font-family: inherit;
+        }
+        .payment-section .btn-pay:hover { opacity: 0.85; transform: translateY(-1px); }
+
+        @media(max-width:768px) {
+            nav ul { display:none; }
+            nav { padding:0 20px; }
+            section { padding:60px 20px; }
+            .dash-body { grid-template-columns:1fr; }
+            .dash-sidebar { border-right:none; border-bottom:1px solid var(--border); padding:0 0 16px; display:flex; gap:8px; flex-wrap:wrap; }
+            .dash-content { padding-left:0; }
+            .dash-cards { grid-template-columns:1fr 1fr; }
+            .warmup-grid { grid-template-columns:1fr; }
+            .sched-grid { grid-template-columns:1fr; }
+            .reviews-grid { grid-template-columns:1fr; }
+            .panel-main { padding: 16px; }
+            .stats-grid-panel { grid-template-columns: repeat(3, 1fr); }
+            .payment-section .amount-input { flex-direction: column; }
+            .payment-section .amount-input input { width: 100%; }
+            .payment-section .btn-pay { width: 100%; }
+        }
+    </style>
+</head>
+<body>
+
+<!-- ЛЕНДИНГ -->
+<div id="landingPage">
+    <nav>
+        <div class="logo">
+            <img src="https://pix-up.ru/uploads/img_6a34fd977f9ee4.35601145_1781857687.png" alt="Telegrams GPT" onerror="this.style.display='none';">
+            Telegrams<span> GPT</span>
+        </div>
+        <ul>
+            <li><a href="#tools">Инструменты</a></li>
+            <li><a href="#pricing">Тарифы</a></li>
+        </ul>
+        <div>
+            <button class="nav-btn" id="navBtn" onclick="openModal('login')">Войти</button>
+            <div class="nav-user" id="navUser">
+                <span id="userName">Пользователь</span>
+                <span class="logout" onclick="logout()">Выйти</span>
+            </div>
+        </div>
+    </nav>
+
+    <div class="hero">
+        <div class="hero-grid"></div>
+        <div class="hero-glow"></div>
+        <div class="badge">Telegrams GPT · AI-комбайн для Telegram</div>
+        <h1>Умный <span class="purple">комбайн</span><br>для Telegram</h1>
+        <p class="hero-sub">Прогрев аккаунтов, генерация контента с AI, парсинг аудитории, авто-воронки и аналитика — всё в одном месте.</p>
+        <div class="hero-actions">
+            <button class="btn-primary" onclick="openModal('login')">Начать бесплатно →</button>
+            <button class="btn-secondary" onclick="document.getElementById('tools').scrollIntoView({behavior:'smooth'})">Посмотреть функции</button>
+        </div>
+        <div class="hero-stats">
+            <div class="stat"><div class="stat-num">15+</div><div class="stat-label">Инструментов</div></div>
+            <div class="stat"><div class="stat-num">3</div><div class="stat-label">Режима прогрева</div></div>
+            <div class="stat"><div class="stat-num">AI</div><div class="stat-label">Генерация контента</div></div>
+            <div class="stat"><div class="stat-num">24/7</div><div class="stat-label">Мониторинг</div></div>
+        </div>
+    </div>
+
+    <section id="tools">
+        <div class="section-label">Инструменты</div>
+        <h2 class="section-title">Всё что нужно для Telegram</h2>
+        <p class="section-sub">Профессиональный набор инструментов для работы с аккаунтами, каналами и аудиторией.</p>
+        <div class="tools-grid">
+            <div class="tool-card" onclick="document.getElementById('warmup').scrollIntoView({behavior:'smooth'})">
+                <div class="tool-icon" style="background:rgba(43,127,255,0.12)">🔥</div>
+                <h3>Прогрев аккаунта</h3>
+                <p>Постепенная активность: лайки, просмотры, сообщения — имитация живого пользователя. 3 режима интенсивности.</p>
+                <span class="tool-tag">ПРОГРЕВ</span>
+            </div>
+            <div class="tool-card">
+                <div class="tool-icon" style="background:rgba(123,63,255,0.12)">✨</div>
+                <h3>AI Генератор контента</h3>
+                <p>Создаёт посты, истории, описания каналов на нужную тематику с нужным тоном и стилем.</p>
+                <span class="tool-tag">AI</span>
+            </div>
+            <div class="tool-card">
+                <div class="tool-icon" style="background:rgba(0,217,126,0.12)">📊</div>
+                <h3>Аналитика каналов</h3>
+                <p>Охваты, вовлечённость, рост аудитории, лучшее время для постинга — детальная статистика.</p>
+                <span class="tool-tag">АНАЛИТИКА</span>
+            </div>
+            <div class="tool-card">
+                <div class="tool-icon" style="background:rgba(255,184,0,0.12)">📅</div>
+                <h3>Планировщик постов</h3>
+                <p>Составляй контент-план и публикуй автоматически в нужное время по расписанию.</p>
+                <span class="tool-tag">АВТО</span>
+            </div>
+            <div class="tool-card">
+                <div class="tool-icon" style="background:rgba(255,77,106,0.12)">👥</div>
+                <h3>Парсер аудитории</h3>
+                <p>Сбор целевой аудитории из конкурентных каналов и групп по заданным параметрам.</p>
+                <span class="tool-tag">ПАРСИНГ</span>
+            </div>
+            <div class="tool-card">
+                <div class="tool-icon" style="background:rgba(43,127,255,0.12)">🤖</div>
+                <h3>Авто-воронка</h3>
+                <p>Настрой цепочку сообщений для новых подписчиков: приветствие, оффер, продажа — на автопилоте.</p>
+                <span class="tool-tag">ВОРОНКА</span>
+            </div>
+            <div class="tool-card">
+                <div class="tool-icon" style="background:rgba(123,63,255,0.12)">💡</div>
+                <h3>AI Идеи для постов</h3>
+                <p>Укажи нишу — AI сгенерирует 10 идей для постов с заголовками и CTA под твою аудиторию.</p>
+                <span class="tool-tag">AI</span>
+            </div>
+            <div class="tool-card">
+                <div class="tool-icon" style="background:rgba(0,217,126,0.12)">📈</div>
+                <h3>Рост подписчиков</h3>
+                <p>Автоматические комментарии в целевых каналах, реакции и взаимный PR для органического роста.</p>
+                <span class="tool-tag">РОСТ</span>
+            </div>
+            <div class="tool-card">
+                <div class="tool-icon" style="background:rgba(255,184,0,0.12)">💬</div>
+                <h3>Авто-чат бот</h3>
+                <p>AI отвечает на вопросы подписчиков в директе и группах, ведёт диалог как живой менеджер.</p>
+                <span class="tool-tag">BOT</span>
+            </div>
+            <div class="tool-card">
+                <div class="tool-icon" style="background:rgba(43,127,255,0.12)">📨</div>
+                <h3>Рассылка</h3>
+                <p>Массовая рассылка сообщений в Telegram-каналы и чаты.</p>
+                <span class="tool-tag">РАССЫЛКА</span>
+            </div>
+        </div>
+    </section>
+
+    <section id="pricing">
+        <div class="section-label">Тарифы</div>
+        <h2 class="section-title">Выбери свой план</h2>
+        <p class="section-sub">Начни бесплатно, масштабируй по мере роста.</p>
+        <div class="pricing-grid">
+            <div class="price-card">
+                <div class="price-name">Старт</div>
+                <div class="price-val"><sup>₽</sup>0</div>
+                <div class="price-per">навсегда бесплатно</div>
+                <ul class="price-features">
+                    <li>1 аккаунт</li>
+                    <li>Мягкий прогрев</li>
+                    <li>10 AI генераций/мес</li>
+                    <li>Базовая аналитика</li>
+                    <li class="no">Планировщик постов</li>
+                    <li class="no">Парсер аудитории</li>
+                    <li class="no">Авто-воронки</li>
+                </ul>
+                <button class="price-btn" onclick="openModal('login')">Начать бесплатно</button>
+            </div>
+            <div class="price-card popular">
+                <div class="popular-tag">⭐ Популярный</div>
+                <div class="price-name">Про</div>
+                <div class="price-val"><sup>₽</sup>999</div>
+                <div class="price-per">в месяц</div>
+                <ul class="price-features">
+                    <li>10 аккаунтов</li>
+                    <li>Все 3 режима прогрева</li>
+                    <li>500 AI генераций/мес</li>
+                    <li>Детальная аналитика</li>
+                    <li>Планировщик постов</li>
+                    <li>Парсер аудитории</li>
+                    <li>Авто-воронки</li>
+                </ul>
+                <button class="price-btn accent" onclick="openModal('login')">Выбрать Про</button>
+            </div>
+            <div class="price-card">
+                <div class="price-name">Бизнес</div>
+                <div class="price-val"><sup>₽</sup>3 200</div>
+                <div class="price-per">в месяц</div>
+                <ul class="price-features">
+                    <li>Неограниченно аккаунтов</li>
+                    <li>Все 3 режима прогрева</li>
+                    <li>Безлимит AI генераций</li>
+                    <li>Расширенная аналитика</li>
+                    <li>Планировщик постов</li>
+                    <li>Парсер аудитории</li>
+                    <li>Авто-воронки</li>
+                    <li>Приоритетная поддержка</li>
+                </ul>
+                <button class="price-btn" onclick="openModal('login')">Выбрать Бизнес</button>
+            </div>
+        </div>
+    </section>
+
+    <!-- ОТЗЫВЫ -->
+    <div class="reviews-section" id="reviewsSection">
+        <h2>⭐ Отзывы наших клиентов</h2>
+        <p class="sub">Более 200 реальных отзывов от пользователей</p>
+        <div class="reviews-grid" id="reviewsGrid">
+            <div style="text-align:center;color:var(--muted);padding:20px;">Загрузка отзывов...</div>
+        </div>
+    </div>
+
+    <!-- О НАС -->
+    <div class="about-section">
+        <h2>🚀 О нас</h2>
+        <p>
+            Мы — команда профессионалов, которая создала <strong>Telegrams GPT</strong> — первый ИИ-комбайн для Telegram.
+            Наша миссия — помочь предпринимателям, маркетологам и владельцам каналов автоматизировать продвижение в Telegram.
+        </p>
+        <p style="margin-top:12px;">
+            За 2025 год мы помогли более <strong>500+ клиентам</strong> привлечь более <strong>1 млн подписчиков</strong>.
+            Наш сервис используют в 50 странах мира.
+        </p>
+        <div class="stats">
+            <div class="stat-item"><div class="num">500+</div><div class="label">Клиентов</div></div>
+            <div class="stat-item"><div class="num">1M+</div><div class="label">Подписчиков</div></div>
+            <div class="stat-item"><div class="num">50</div><div class="label">Стран</div></div>
+            <div class="stat-item"><div class="num">99%</div><div class="label">Довольных</div></div>
+        </div>
+    </div>
+
+    <footer>
+        <div class="logo">Telegrams<span style="-webkit-text-fill-color:var(--text)"> GPT</span></div>
+        <p>Профессиональный комбайн для работы с Telegram</p>
+        <p style="margin-top:8px;font-size:12px">© 2026 Telegrams GPT · Все права защищены</p>
+        <div class="company-info">
+            ООО "Телеграмс ГПТ" · ИНН 7842157391 · ОГРН 1237804567890
+        </div>
+    </footer>
+</div>
+
+<!-- ПАНЕЛЬ УПРАВЛЕНИЯ -->
+<div class="panel-container" id="panelContainer">
+    <nav style="position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;justify-content:space-between;padding:0 20px;height:64px;background:rgba(8,12,20,0.92);backdrop-filter:blur(18px);border-bottom:1px solid var(--border);">
+        <div style="display:flex;align-items:center;gap:12px;">
+            <button class="burger-btn show" onclick="toggleSidebar()" style="font-size:28px;background:none;border:none;color:var(--text);cursor:pointer;">☰</button>
+            <div class="logo" style="font-size:18px;">Telegrams<span> GPT</span></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;">
+            <span id="panelUserName" style="color:var(--text);font-size:14px;font-weight:500;"></span>
+            <button class="nav-btn" style="padding:6px 16px;font-size:12px;" onclick="logout()">Выйти</button>
+        </div>
+    </nav>
+
+    <div class="sidebar-panel" id="sidebarPanel">
+        <div class="menu-label">Главная</div>
+        <button class="menu-item active" onclick="switchPage('accounts',this)">
+            <span class="icon">📊</span> Менеджер аккаунтов
+        </button>
+        <button class="menu-item" onclick="switchPage('stats',this)">
+            <span class="icon">📈</span> Статистика
+        </button>
+        <button class="menu-item" onclick="switchPage('promo',this)">
+            <span class="icon">🎁</span> Промокоды
+        </button>
+        <button class="menu-item" onclick="switchPage('payment',this)">
+            <span class="icon">💳</span> Оплата
+        </button>
+
+        <div class="menu-label">Модули</div>
+        <button class="menu-item" onclick="switchPage('comment',this)">
+            <span class="icon">🧠</span> Нейрокомментинг
+        </button>
+        <button class="menu-item" onclick="switchPage('reactions',this)">
+            <span class="icon">🔥</span> Масс Реакции
+        </button>
+        <button class="menu-item" onclick="switchPage('warmup',this)">
+            <span class="icon">⚡</span> Прогрев
+        </button>
+        <button class="menu-item" onclick="switchPage('parse',this)">
+            <span class="icon">📡</span> Парсинг
+        </button>
+        <button class="menu-item" onclick="switchPage('dialogs',this)">
+            <span class="icon">💬</span> НейроДиалоги
+        </button>
+        <button class="menu-item" onclick="switchPage('funnel',this)">
+            <span class="icon">🎯</span> Воронки
+        </button>
+        <button class="menu-item" onclick="switchPage('scheduler',this)">
+            <span class="icon">📅</span> Планировщик
+        </button>
+        <button class="menu-item" onclick="switchPage('mailing',this)">
+            <span class="icon">📨</span> Рассылка
+        </button>
+
+        <div class="menu-label">Настройки</div>
+        <button class="menu-item" onclick="switchPage('proxies',this)">
+            <span class="icon">🌐</span> Прокси
+        </button>
+        <button class="menu-item" onclick="switchPage('auto_replies',this)">
+            <span class="icon">🤖</span> Авто-ответы
+        </button>
+    </div>
+
+    <div class="panel-main" id="panelMain">
+
+        <!-- МЕНЕДЖЕР АККАУНТОВ -->
+        <div id="pageAccounts">
+            <div class="panel-topbar">
+                <h1>📊 Менеджер аккаунтов</h1>
+                <div style="display:flex;gap:10px;flex-wrap:wrap;margin-left:auto;">
+                    <button class="btn-sm green" onclick="showToast('➕ Добавление аккаунта')">➕ Добавить</button>
+                    <button class="btn-sm outline" onclick="loadAccounts()">🔄 Обновить</button>
+                </div>
+            </div>
+            <div class="stats-grid-panel">
+                <div class="stat-card-panel"><div class="num" id="statActive">0</div><div class="label">Активные</div></div>
+                <div class="stat-card-panel"><div class="num green" id="statWorking">0</div><div class="label">В работе</div></div>
+                <div class="stat-card-panel"><div class="num yellow" id="statQuarantine">0</div><div class="label">На карантине</div></div>
+                <div class="stat-card-panel"><div class="num red" id="statSpam">0</div><div class="label">Спам-блок</div></div>
+                <div class="stat-card-panel"><div class="num" id="statFrozen" style="color:#8A8A9E;">0</div><div class="label">Замороженные</div></div>
+            </div>
+            <div class="table-wrap-panel">
+                <div class="table-header-panel">
+                    <h3>📋 Мои аккаунты</h3>
+                </div>
+                <table>
+                    <thead><tr><th>Имя</th><th>Телефон</th><th>Роль</th><th>Статус</th><th>Прогрев</th></tr></thead>
+                    <tbody id="accountsBody">
+                        <tr><td colspan="5" style="text-align:center;color:var(--muted);padding:20px;">Загружаем...</td></tr>
+                    </tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- СТАТИСТИКА -->
+        <div id="pageStats" style="display:none;">
+            <div class="panel-topbar"><h1>📈 Статистика</h1></div>
+            <div class="stats-grid-panel">
+                <div class="stat-card-panel"><div class="num" id="statTotal">0</div><div class="label">Всего</div></div>
+                <div class="stat-card-panel"><div class="num green" id="statPurchases">0</div><div class="label">Покупок</div></div>
+                <div class="stat-card-panel"><div class="num yellow" id="statBalance">0 ₽</div><div class="label">Баланс</div></div>
+            </div>
+        </div>
+
+        <!-- ПРОМОКОДЫ -->
+        <div id="pagePromo" style="display:none;">
+            <div class="panel-topbar"><h1>🎁 Промокоды</h1></div>
+            <div class="subscription-section">
+                <div id="promoCodes" style="margin-top:10px;"></div>
+                <div style="margin-top:16px;padding-top:16px;border-top:1px solid var(--border);">
+                    <h4>Активировать промокод</h4>
+                    <div class="promo-input">
+                        <input id="promoInput" placeholder="Введите промокод">
+                        <input id="promoAmount" placeholder="Сумма пополнения" value="0">
+                        <button class="btn-sm green" onclick="applyPromo()">🎁 Активировать</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ОПЛАТА -->
+        <div id="pagePayment" style="display:none;">
+            <div class="panel-topbar"><h1>💳 Оплата услуг</h1></div>
+            <div class="payment-section">
+                <h3 style="margin-bottom:12px;">Пополнить баланс</h3>
+                <div class="amount-input">
+                    <input type="number" id="paymentAmount" placeholder="Сумма пополнения" value="100" min="1">
+                    <button class="btn-pay" onclick="createPayment()">💳 Оплатить</button>
+                </div>
+                <div style="margin-top:12px;font-size:13px;color:var(--muted);">
+                    🔒 Безопасная оплата через ЮMoney
+                </div>
+                <div id="paymentResult" style="margin-top:12px;"></div>
+            </div>
+        </div>
+
+        <!-- НЕЙРОКОММЕНТИНГ -->
+        <div id="pageComment" style="display:none;">
+            <div class="panel-topbar"><h1>🧠 Нейрокомментинг</h1></div>
+            <div class="subscription-section">
+                <textarea id="commentText" placeholder="Текст комментария..." rows="3" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text);font-family:inherit;"></textarea>
+                <input id="commentChannel" placeholder="📢 @канал" style="width:100%;margin-top:8px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text);font-family:inherit;">
+                <button class="btn-sm green" onclick="sendComment()" style="margin-top:10px;">💬 Отправить</button>
+                <div style="margin-top:12px;font-size:13px;color:var(--muted);">💡 Требуется подписка Про или Бизнес</div>
+                <div id="commentHistory" style="margin-top:12px;"></div>
+            </div>
+        </div>
+
+        <!-- МАСС РЕАКЦИИ -->
+        <div id="pageReactions" style="display:none;">
+            <div class="panel-topbar"><h1>🔥 Масс Реакции</h1></div>
+            <div class="subscription-section">
+                <input id="reactionChannel" placeholder="📢 @канал" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text);font-family:inherit;">
+                <select id="reactionType" style="width:100%;margin-top:8px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text);font-family:inherit;">
+                    <option>🔥</option><option>❤️</option><option>👍</option><option>🚀</option><option>🎉</option>
+                </select>
+                <input id="reactionCount" placeholder="Количество" value="10" style="width:100%;margin-top:8px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text);font-family:inherit;">
+                <button class="btn-sm green" onclick="sendReactions()" style="margin-top:10px;">🔥 Отправить</button>
+                <div style="margin-top:12px;font-size:13px;color:var(--muted);">💡 Требуется подписка Про или Бизнес</div>
+            </div>
+        </div>
+
+        <!-- ПРОГРЕВ -->
+        <div id="pageWarmup" style="display:none;">
+            <div class="panel-topbar"><h1>⚡ Прогрев</h1></div>
+            <div class="subscription-section">
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
+                    <div class="stat-card-panel" onclick="startWarmup(1)" style="cursor:pointer;border-left:4px solid var(--green);">
+                        <div style="font-weight:700;">🟢 Мягкий</div>
+                        <div style="font-size:12px;color:var(--muted);">50 просмотров</div>
+                    </div>
+                    <div class="stat-card-panel" onclick="startWarmup(2)" style="cursor:pointer;border-left:4px solid var(--yellow);">
+                        <div style="font-weight:700;">🟡 Средний</div>
+                        <div style="font-size:12px;color:var(--muted);">200 просмотров</div>
+                    </div>
+                    <div class="stat-card-panel" onclick="startWarmup(3)" style="cursor:pointer;border-left:4px solid var(--red);">
+                        <div style="font-weight:700;">🔴 Интенсивный</div>
+                        <div style="font-size:12px;color:var(--muted);">500 просмотров</div>
+                    </div>
+                </div>
+                <div style="margin-top:12px;font-size:13px;color:var(--muted);">💡 Требуется подписка Про или Бизнес</div>
+            </div>
+        </div>
+
+        <!-- ПАРСИНГ -->
+        <div id="pageParse" style="display:none;">
+            <div class="panel-topbar"><h1>📡 Парсинг</h1></div>
+            <div class="subscription-section">
+                <input id="parseQuery" placeholder="🔍 Ключевое слово или @канал" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text);font-family:inherit;">
+                <input id="parseLimit" placeholder="Лимит" value="50" style="width:100%;margin-top:8px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text);font-family:inherit;">
+                <button class="btn-sm green" onclick="runParse()" style="margin-top:10px;">🔍 Начать парсинг</button>
+                <div id="parseResult" style="margin-top:12px;"></div>
+                <div style="margin-top:12px;font-size:13px;color:var(--muted);">💡 Требуется подписка Про или Бизнес</div>
+            </div>
+        </div>
+
+        <!-- НЕЙРОДИАЛОГИ -->
+        <div id="pageDialogs" style="display:none;">
+            <div class="panel-topbar"><h1>💬 НейроДиалоги</h1></div>
+            <div class="subscription-section">
+                <input id="dialogChat" placeholder="💬 @чат или ID" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text);font-family:inherit;">
+                <input id="dialogMessage" placeholder="Сообщение..." style="width:100%;margin-top:8px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text);font-family:inherit;">
+                <button class="btn-sm green" onclick="startDialog()" style="margin-top:10px;">💬 Начать</button>
+                <div style="margin-top:12px;font-size:13px;color:var(--muted);">💡 Требуется подписка Про или Бизнес</div>
+                <div id="dialogsList" style="margin-top:12px;"></div>
+            </div>
+        </div>
+
+        <!-- ВОРОНКИ -->
+        <div id="pageFunnel" style="display:none;">
+            <div class="panel-topbar"><h1>🎯 Воронки</h1></div>
+            <div class="subscription-section">
+                <input id="funnelName" placeholder="Название воронки" value="Моя воронка" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text);font-family:inherit;">
+                <button class="btn-sm green" onclick="generateFunnel()" style="margin-top:10px;">✨ Создать</button>
+                <div id="funnelResult" style="margin-top:12px;"></div>
+                <div style="margin-top:12px;font-size:13px;color:var(--muted);">💡 Требуется подписка Про или Бизнес</div>
+            </div>
+        </div>
+
+        <!-- ПЛАНИРОВЩИК -->
+        <div id="pageScheduler" style="display:none;">
+            <div class="panel-topbar"><h1>📅 Планировщик</h1></div>
+            <div class="subscription-section">
+                <textarea id="schedText" placeholder="Текст поста..." rows="3" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text);font-family:inherit;"></textarea>
+                <input id="schedDate" type="datetime-local" style="width:100%;margin-top:8px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text);font-family:inherit;">
+                <button class="btn-sm green" onclick="schedulePost()" style="margin-top:10px;">📅 Запланировать</button>
+                <div style="margin-top:12px;font-size:13px;color:var(--muted);">💡 Требуется подписка Про или Бизнес</div>
+                <div id="schedList" style="margin-top:12px;"></div>
+            </div>
+        </div>
+
+        <!-- РАССЫЛКА -->
+        <div id="pageMailing" style="display:none;">
+            <div class="panel-topbar"><h1>📨 Рассылка</h1></div>
+            <div class="subscription-section">
+                <input id="mailingChannel" placeholder="📢 @канал" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text);font-family:inherit;">
+                <textarea id="mailingText" placeholder="Текст сообщения..." rows="3" style="width:100%;margin-top:8px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text);font-family:inherit;"></textarea>
+                <input id="mailingCount" placeholder="Количество" value="10" style="width:100%;margin-top:8px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px;color:var(--text);font-family:inherit;">
+                <button class="btn-sm green" onclick="sendMailing()" style="margin-top:10px;">📨 Отправить</button>
+                <div style="margin-top:12px;font-size:13px;color:var(--muted);">💡 Требуется подписка Про или Бизнес</div>
+            </div>
+        </div>
+
+        <!-- ПРОКСИ -->
+        <div id="pageProxies" style="display:none;">
+            <div class="panel-topbar"><h1>🌐 Прокси</h1></div>
+            <div class="subscription-section">
+                <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
+                    <input id="proxyIp" placeholder="IP" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px;color:var(--text);font-family:inherit;">
+                    <input id="proxyPort" placeholder="Порт" style="background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px;color:var(--text);font-family:inherit;">
+                </div>
+                <input id="proxyLogin" placeholder="Логин (опционально)" style="width:100%;margin-top:8px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px;color:var(--text);font-family:inherit;">
+                <input id="proxyPass" placeholder="Пароль (опционально)" style="width:100%;margin-top:8px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px;color:var(--text);font-family:inherit;">
+                <button class="btn-sm green" onclick="addProxy()" style="margin-top:10px;">🌐 Добавить</button>
+                <div id="proxiesList" style="margin-top:12px;"></div>
+            </div>
+        </div>
+
+        <!-- АВТО-ОТВЕТЫ -->
+        <div id="pageAutoReplies" style="display:none;">
+            <div class="panel-topbar"><h1>🤖 Авто-ответы</h1></div>
+            <div class="subscription-section">
+                <input id="replyKeyword" placeholder="Ключевое слово" style="width:100%;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px;color:var(--text);font-family:inherit;">
+                <textarea id="replyText" placeholder="Текст ответа..." rows="2" style="width:100%;margin-top:8px;background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:8px;color:var(--text);font-family:inherit;"></textarea>
+                <button class="btn-sm green" onclick="addAutoReply()" style="margin-top:10px;">🤖 Добавить</button>
+                <div style="margin-top:12px;font-size:13px;color:var(--muted);">💡 Требуется подписка Про или Бизнес</div>
+                <div id="repliesList" style="margin-top:12px;"></div>
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<!-- МОДАЛКА -->
+<div class="modal-overlay" id="modalOverlay" onclick="closeModalOutside(event)">
+    <div class="modal" onclick="event.stopPropagation();">
+        <button class="modal-close" onclick="closeModal()">×</button>
+        <div id="modalBody"></div>
+    </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API_URL = `http://${window.location.hostname}:8000`;
+let currentUser = null;
+
+function showToast(msg, color='#00D97E') {
+    const t = document.getElementById('toast');
+    t.textContent = msg;
+    t.style.borderColor = color;
+    t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 3000);
+}
+
+async function apiCall(endpoint, data = {}) {
+    try {
+        const response = await fetch(`${API_URL}${endpoint}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(data)
+        });
+        return await response.json();
+    } catch (error) {
+        showToast('⚠️ Ошибка соединения', '#FF4D6A');
+        return { success: false };
+    }
+}
+
+async function apiGet(endpoint) {
+    try {
+        const response = await fetch(`${API_URL}${endpoint}`);
+        return await response.json();
+    } catch (error) {
+        showToast('⚠️ Ошибка соединения', '#FF4D6A');
+        return { success: false };
+    }
+}
+
+function openModal() {
+    document.getElementById('modalOverlay').classList.add('open');
+    document.getElementById('loginError')?.classList.remove('show');
+    document.getElementById('regError')?.classList.remove('show');
+    document.getElementById('regSuccess')?.classList.remove('show');
+}
+
+function closeModal() {
+    document.getElementById('modalOverlay').classList.remove('open');
+}
+
+function closeModalOutside(e) {
+    if (e.target === document.getElementById('modalOverlay')) closeModal();
+}
+
+function switchAuthTab(tab, el) {
+    document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    el.classList.add('active');
+    document.getElementById('loginForm').style.display = tab === 'login' ? 'block' : 'none';
+    document.getElementById('registerForm').style.display = tab === 'register' ? 'block' : 'none';
+}
+
+async function register() {
+    const name = document.getElementById('regName').value.trim();
+    const email = document.getElementById('regEmail').value.trim();
+    const password = document.getElementById('regPassword').value;
+    const error = document.getElementById('regError');
+    const success = document.getElementById('regSuccess');
+    error.classList.remove('show');
+    success.classList.remove('show');
+    
+    if (!name || !email || !password) {
+        error.textContent = '⚠️ Заполни все поля';
+        error.classList.add('show');
+        return;
+    }
+    if (password.length < 4) {
+        error.textContent = '⚠️ Пароль минимум 4 символа';
+        error.classList.add('show');
+        return;
+    }
+    
+    const response = await apiCall('/api/register', { name, email, password });
+    if (response.success) {
+        success.textContent = '✅ ' + response.message;
+        success.classList.add('show');
+        document.getElementById('regName').value = '';
+        document.getElementById('regEmail').value = '';
+        document.getElementById('regPassword').value = '';
+        showToast('✅ Регистрация успешна! Войдите в аккаунт.');
+        setTimeout(() => switchAuthTab('login', document.querySelector('.tab')), 1500);
+    } else {
+        error.textContent = '❌ ' + (response.error || 'Ошибка');
+        error.classList.add('show');
+    }
+}
+
+async function login() {
+    const email = document.getElementById('loginEmail').value.trim();
+    const password = document.getElementById('loginPassword').value;
+    const error = document.getElementById('loginError');
+    error.classList.remove('show');
+    
+    if (!email || !password) {
+        error.textContent = '⚠️ Заполни все поля';
+        error.classList.add('show');
+        return;
+    }
+    
+    const response = await apiCall('/api/login', { email, password });
+    if (response.success) {
+        currentUser = response.user;
+        document.getElementById('userName').textContent = currentUser.name;
+        document.getElementById('navUser').classList.add('show');
+        document.getElementById('navBtn').style.display = 'none';
+        closeModal();
+        showToast('✅ Добро пожаловать, ' + currentUser.name + '!');
+        localStorage.setItem('telegramGPT_user', JSON.stringify(currentUser));
+        document.getElementById('landingPage').style.display = 'none';
+        document.getElementById('panelContainer').classList.add('active');
+        document.getElementById('panelUserName').textContent = currentUser.name;
+        loadAllData();
+    } else {
+        error.textContent = '❌ ' + (response.error || 'Неверный email или пароль');
+        error.classList.add('show');
+    }
+}
+
+function logout() {
+    currentUser = null;
+    document.getElementById('navUser').classList.remove('show');
+    document.getElementById('navBtn').style.display = 'block';
+    localStorage.removeItem('telegramGPT_user');
+    document.getElementById('landingPage').style.display = 'block';
+    document.getElementById('panelContainer').classList.remove('active');
+    showToast('👋 Вы вышли');
+}
+
+function toggleSidebar() {
+    document.getElementById('sidebarPanel').classList.toggle('open');
+}
+
+function switchPage(page, el) {
+    document.querySelectorAll('.sidebar-panel .menu-item').forEach(m => m.classList.remove('active'));
+    if (el) el.classList.add('active');
+    
+    const pages = ['accounts', 'stats', 'promo', 'payment', 'comment', 'reactions', 'warmup', 'parse', 'dialogs', 'funnel', 'scheduler', 'mailing', 'proxies', 'auto_replies'];
+    pages.forEach(p => {
+        const el = document.getElementById('page' + p.charAt(0).toUpperCase() + p.slice(1));
+        if (el) el.style.display = p === page ? 'block' : 'none';
+    });
+    
+    document.getElementById('sidebarPanel').classList.remove('open');
+    
+    if (page === 'stats') loadStats();
+    if (page === 'promo') loadPromoCodes();
+    if (page === 'proxies') loadProxies();
+    if (page === 'auto_replies') loadAutoReplies();
+    if (page === 'dialogs') loadDialogs();
+    if (page === 'scheduler') loadScheduledPosts();
+    if (page === 'comment') loadComments();
+}
+
+function checkSession() {
+    const saved = localStorage.getItem('telegramGPT_user');
+    if (saved) {
+        try {
+            const user = JSON.parse(saved);
+            currentUser = user;
+            document.getElementById('userName').textContent = user.name;
+            document.getElementById('navUser').classList.add('show');
+            document.getElementById('navBtn').style.display = 'none';
+            document.getElementById('landingPage').style.display = 'none';
+            document.getElementById('panelContainer').classList.add('active');
+            document.getElementById('panelUserName').textContent = user.name;
+            loadAllData();
+        } catch(e) {}
+    }
+}
+
+function loadAllData() {
+    loadAccounts();
+    loadStats();
+    loadPromoCodes();
+    loadProxies();
+    loadAutoReplies();
+    loadDialogs();
+    loadScheduledPosts();
+    loadComments();
+    loadReviews();
+}
+
+async function loadAccounts() {
+    if (!currentUser) return;
+    const response = await apiGet(`/api/stats?user_id=${currentUser.id}`);
+    if (response.success) {
+        const s = response.stats;
+        document.getElementById('statActive').textContent = s['Активный'] || 0;
+        document.getElementById('statWorking').textContent = s['В работе'] || 0;
+        document.getElementById('statQuarantine').textContent = s['На карантине'] || 0;
+        document.getElementById('statSpam').textContent = s['Спам-блок'] || 0;
+        document.getElementById('statFrozen').textContent = s['Заморожен'] || 0;
+    }
+    
+    const accResponse = await apiGet(`/api/accounts?user_id=${currentUser.id}`);
+    if (accResponse.success && accResponse.accounts) {
+        const tbody = document.getElementById('accountsBody');
+        const accounts = accResponse.accounts || [];
+        if (accounts.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="5" style="text-align:center;color:var(--muted);padding:20px;">Нет аккаунтов</td></tr>';
+            return;
+        }
+        let html = '';
+        accounts.forEach(a => {
+            const statusClass = a.status === 'Активный' ? 'status-active' : 
+                               a.status === 'В работе' ? 'status-working' :
+                               a.status === 'На карантине' ? 'status-quarantine' :
+                               a.status === 'Спам-блок' ? 'status-spam' : 'status-frozen';
+            html += `<tr>
+                <td><strong>${a.name || a.phone}</strong><br><span style="font-size:12px;color:var(--muted);">${a.username || ''}</span></td>
+                <td>${a.phone}</td>
+                <td>${a.role || 'Писатель'}</td>
+                <td><span class="status-badge ${statusClass}">${a.status || 'Активный'}</span></td>
+                <td>${a.is_warmed ? '🔥 Да' : '❌ Нет'}</td>
+            </tr>`;
+        });
+        tbody.innerHTML = html;
+    }
+}
+
+async function loadStats() {
+    if (!currentUser) return;
+    const response = await apiGet(`/api/stats?user_id=${currentUser.id}`);
+    if (response.success) {
+        const s = response.stats;
+        document.getElementById('statTotal').textContent = Object.values(s).reduce((a,b) => a + (typeof b === 'number' ? b : 0), 0);
+        document.getElementById('statPurchases').textContent = s.purchases || 0;
+        document.getElementById('statBalance').textContent = (s.balance || 0) + ' ₽';
+    }
+}
+
+async function loadPromoCodes() {
+    const response = await apiGet('/api/promo_codes');
+    if (response.success && response.codes) {
+        const container = document.getElementById('promoCodes');
+        if (response.codes.length === 0) {
+            container.innerHTML = '<div style="color:var(--muted);padding:10px;">Все промокоды активированы</div>';
+            return;
+        }
+        container.innerHTML = response.codes.map(p => 
+            `<div style="background:var(--bg);padding:8px 12px;border-radius:6px;margin:4px 0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+                <span style="font-family:monospace;color:var(--accent);">${p.code}</span>
+                <span style="color:var(--green);font-weight:600;">+${p.discount} ₽</span>
+                <span style="color:var(--muted);font-size:12px;">от ${p.min_order} ₽</span>
+            </div>`
+        ).join('');
+    }
+}
+
+async function loadProxies() {
+    if (!currentUser) return;
+    const response = await apiGet(`/api/proxies?user_id=${currentUser.id}`);
+    if (response.success && response.proxies) {
+        const container = document.getElementById('proxiesList');
+        if (response.proxies.length === 0) {
+            container.innerHTML = '<div style="color:var(--muted);">🌐 Нет прокси</div>';
+            return;
+        }
+        container.innerHTML = response.proxies.map(p => 
+            `<div style="background:var(--bg);padding:8px 12px;border-radius:6px;margin:4px 0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+                <span>${p.ip}:${p.port}</span>
+                <span>${p.is_active ? '🟢' : '🔴'}</span>
+            </div>`
+        ).join('');
+    }
+}
+
+async function loadAutoReplies() {
+    if (!currentUser) return;
+    const response = await apiGet(`/api/auto_replies?user_id=${currentUser.id}`);
+    if (response.success && response.replies) {
+        const container = document.getElementById('repliesList');
+        if (response.replies.length === 0) {
+            container.innerHTML = '<div style="color:var(--muted);">🤖 Нет авто-ответов</div>';
+            return;
+        }
+        container.innerHTML = response.replies.map(r => 
+            `<div style="background:var(--bg);padding:8px 12px;border-radius:6px;margin:4px 0;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;">
+                <span><strong>${r.keyword}</strong> → ${r.reply}</span>
+                <span>${r.is_active ? '🟢' : '🔴'}</span>
+            </div>`
+        ).join('');
+    }
+}
+
+async function loadDialogs() {
+    if (!currentUser) return;
+    const response = await apiGet(`/api/dialogs?user_id=${currentUser.id}`);
+    if (response.success && response.dialogs) {
+        const container = document.getElementById('dialogsList');
+        if (response.dialogs.length === 0) {
+            container.innerHTML = '<div style="color:var(--muted);">💬 Нет диалогов</div>';
+            return;
+        }
+        container.innerHTML = response.dialogs.map(d => 
+            `<div style="background:var(--bg);padding:8px 12px;border-radius:6px;margin:4px 0;">
+                <div><strong>${d.chat_name || d.chat_id}</strong> <span style="color:var(--muted);font-size:12px;">${d.status}</span></div>
+                <div style="font-size:13px;color:var(--text2);">${d.last_message || 'Нет сообщений'}</div>
+            </div>`
+        ).join('');
+    }
+}
+
+async function loadScheduledPosts() {
+    if (!currentUser) return;
+    const response = await apiGet(`/api/posts?user_id=${currentUser.id}`);
+    if (response.success && response.posts) {
+        const container = document.getElementById('schedList');
+        if (response.posts.length === 0) {
+            container.innerHTML = '<div style="color:var(--muted);">📅 Нет запланированных постов</div>';
+            return;
+        }
+        container.innerHTML = response.posts.map(p => 
+            `<div style="background:var(--bg);padding:8px 12px;border-radius:6px;margin:4px 0;">
+                <div>${p.text.substring(0, 50)}${p.text.length > 50 ? '...' : ''}</div>
+                <div style="font-size:12px;color:var(--muted);">📅 ${p.scheduled_at || p.created_at} ${p.is_published ? '✅ Опубликован' : '⏳ Ожидает'}</div>
+            </div>`
+        ).join('');
+    }
+}
+
+async function loadComments() {
+    if (!currentUser) return;
+    const response = await apiGet(`/api/comments?user_id=${currentUser.id}`);
+    if (response.success && response.comments) {
+        const container = document.getElementById('commentHistory');
+        if (response.comments.length === 0) {
+            container.innerHTML = '<div style="color:var(--muted);">💬 Нет комментариев</div>';
+            return;
+        }
+        container.innerHTML = response.comments.map(c => 
+            `<div style="background:var(--bg);padding:8px 12px;border-radius:6px;margin:4px 0;font-size:13px;">
+                <div><strong>${c.channel}</strong> <span style="color:var(--muted);">${c.status}</span></div>
+                <div style="color:var(--text2);">${c.text}</div>
+            </div>`
+        ).join('');
+    }
+}
+
+async function loadReviews() {
+    try {
+        const response = await apiGet('/api/reviews');
+        if (response.success && response.reviews) {
+            const container = document.getElementById('reviewsGrid');
+            container.innerHTML = response.reviews.map(r => 
+                `<div style="background:var(--card);padding:14px;border-radius:10px;border:1px solid var(--border);">
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
+                        <span style="font-weight:600;">${r.name}</span>
+                        <span style="color:#FFB800;">${'⭐'.repeat(r.rating)}</span>
+                    </div>
+                    <div style="font-size:13px;color:var(--text2);">${r.text}</div>
+                    <div style="font-size:11px;color:var(--muted);margin-top:6px;">${r.date}</div>
+                </div>`
+            ).join('');
+        }
+    } catch(e) { console.log('Ошибка загрузки отзывов'); }
+}
+
+async function applyPromo() {
+    if (!currentUser) { showToast('⚠️ Войдите в аккаунт', '#FFB800'); return; }
+    const code = document.getElementById('promoInput').value.trim();
+    const amount = parseInt(document.getElementById('promoAmount').value) || 0;
+    if (!code) { showToast('⚠️ Введите промокод', '#FFB800'); return; }
+    
+    const response = await apiCall('/api/apply_promo', {
+        code: code,
+        user_id: currentUser.id,
+        amount: amount
+    });
+    if (response.success) {
+        showToast('✅ ' + response.message);
+        loadStats();
+        loadPromoCodes();
+        document.getElementById('promoInput').value = '';
+    } else {
+        showToast('❌ ' + (response.error || 'Ошибка'), '#FF4D6A');
+    }
+}
+
+async function createPayment() {
+    if (!currentUser) { showToast('⚠️ Войдите в аккаунт', '#FFB800'); return; }
+    const amount = parseFloat(document.getElementById('paymentAmount').value);
+    if (!amount || amount < 1) { showToast('⚠️ Введите сумму', '#FFB800'); return; }
+    
+    const result = document.getElementById('paymentResult');
+    result.innerHTML = '<div style="color:var(--muted);">⏳ Создание платежа...</div>';
+    
+    const response = await apiCall('/api/create_payment', {
+        user_id: currentUser.id,
+        amount: amount,
+        service: 'Пополнение баланса Telegrams GPT'
+    });
+    
+    if (response.success) {
+        const url = response.payment_url + '?' + new URLSearchParams(response.params).toString();
+        result.innerHTML = `
+            <div style="color:var(--green);font-weight:600;">✅ Платеж создан!</div>
+            <div style="margin-top:8px;font-size:13px;color:var(--muted);">Сумма: ${amount} ₽</div>
+            <div style="margin-top:8px;">
+                <a href="${url}" target="_blank" style="background:var(--accent);color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;display:inline-block;">💳 Оплатить</a>
+            </div>
+            <div style="margin-top:8px;font-size:12px;color:var(--muted);">Заказ: ${response.order_id}</div>
+            <button class="btn-sm outline" onclick="checkPayment('${response.order_id}')" style="margin-top:8px;">🔄 Проверить оплату</button>
+        `;
+        showToast('✅ Ссылка на оплату создана');
+    } else {
+        result.innerHTML = `<div style="color:var(--red);">❌ ${response.error || 'Ошибка'}</div>`;
+        showToast('❌ Ошибка создания платежа', '#FF4D6A');
+    }
+}
+
+async function checkPayment(orderId) {
+    const response = await apiGet(`/api/order_status/${orderId}`);
+    if (response.success && response.status === 'paid') {
+        showToast('✅ Оплата подтверждена! Баланс пополнен');
+        loadStats();
+    } else {
+        showToast('⏳ Оплата еще не подтверждена', '#FFB800');
+    }
+}
+
+async function sendComment() {
+    if (!currentUser) { showToast('⚠️ Войдите в аккаунт', '#FFB800'); return; }
+    const text = document.getElementById('commentText').value.trim();
+    const channel = document.getElementById('commentChannel').value.trim();
+    if (!text || !channel) { showToast('⚠️ Заполните все поля', '#FFB800'); return; }
+    
+    const response = await apiCall('/api/comment/send', {
+        user_id: currentUser.id,
+        account_id: 1,
+        channel: channel,
+        text: text
+    });
+    if (response.success) {
+        showToast('✅ ' + response.message);
+        loadComments();
+    } else {
+        showToast('❌ ' + (response.error || 'Ошибка'), '#FF4D6A');
+    }
+}
+
+async function sendReactions() {
+    if (!currentUser) { showToast('⚠️ Войдите в аккаунт', '#FFB800'); return; }
+    const channel = document.getElementById('reactionChannel').value.trim();
+    const count = parseInt(document.getElementById('reactionCount').value) || 10;
+    const type = document.getElementById('reactionType').value;
+    if (!channel) { showToast('⚠️ Введите канал', '#FFB800'); return; }
+    
+    const response = await apiCall('/api/reactions/send', {
+        user_id: currentUser.id,
+        account_id: 1,
+        channel: channel,
+        count: count,
+        type: type
+    });
+    if (response.success) {
+        showToast('✅ ' + response.message);
+    } else {
+        showToast('❌ ' + (response.error || 'Ошибка'), '#FF4D6A');
+    }
+}
+
+async function startWarmup(level) {
+    if (!currentUser) { showToast('⚠️ Войдите в аккаунт', '#FFB800'); return; }
+    const response = await apiCall('/api/warmup/start', {
+        user_id: currentUser.id,
+        account_id: 1,
+        level: level
+    });
+    if (response.success) {
+        showToast('✅ ' + response.message);
+        loadAccounts();
+    } else {
+        showToast('❌ ' + (response.error || 'Ошибка'), '#FF4D6A');
+    }
+}
+
+async function runParse() {
+    if (!currentUser) { showToast('⚠️ Войдите в аккаунт', '#FFB800'); return; }
+    const query = document.getElementById('parseQuery').value.trim();
+    const limit = parseInt(document.getElementById('parseLimit').value) || 50;
+    if (!query) { showToast('⚠️ Введите ключевое слово', '#FFB800'); return; }
+    
+    const result = document.getElementById('parseResult');
+    result.innerHTML = '<div style="color:var(--muted);">⏳ Парсинг...</div>';
+    
+    const response = await apiCall('/api/parse/channels', {
+        user_id: currentUser.id,
+        query: query,
+        limit: limit
+    });
+    if (response.success) {
+        let html = `<div style="color:var(--green);font-weight:600;margin-bottom:8px;">✅ Найдено ${response.count} каналов</div>`;
+        response.results.forEach(r => {
+            html += `<div style="padding:6px 0;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;font-size:14px;">
+                <span><strong>${r.name}</strong> ${r.username}</span>
+                <span style="color:var(--muted);">${r.subscribers} подписчиков</span>
+            </div>`;
+        });
+        result.innerHTML = html;
+        showToast('✅ Парсинг завершен');
+    } else {
+        result.innerHTML = '<div style="color:var(--red);">❌ ' + (response.error || 'Ошибка') + '</div>';
+        showToast('❌ ' + (response.error || 'Ошибка'), '#FF4D6A');
+    }
+}
+
+async function startDialog() {
+    if (!currentUser) { showToast('⚠️ Войдите в аккаунт', '#FFB800'); return; }
+    const chat = document.getElementById('dialogChat').value.trim();
+    const message = document.getElementById('dialogMessage').value.trim();
+    if (!chat || !message) { showToast('⚠️ Заполните все поля', '#FFB800'); return; }
+    
+    const response = await apiCall('/api/dialogs/start', {
+        user_id: currentUser.id,
+        account_id: 1,
+        chat_id: chat,
+        chat_name: chat,
+        message: message
+    });
+    if (response.success) {
+        showToast('✅ ' + response.message);
+        loadDialogs();
+        document.getElementById('dialogMessage').value = '';
+    } else {
+        showToast('❌ ' + (response.error || 'Ошибка'), '#FF4D6A');
+    }
+}
+
+async function generateFunnel() {
+    if (!currentUser) { showToast('⚠️ Войдите в аккаунт', '#FFB800'); return; }
+    const name = document.getElementById('funnelName').value.trim() || 'Моя воронка';
+    const steps = [
+        { title: '👋 Приветствие', description: 'Сразу после подписки', delay_days: 0 },
+        { title: '🎁 Лид-магнит', description: 'Бесплатный материал', delay_days: 1 },
+        { title: '💬 Вовлечение', description: 'Задаём вопрос', delay_days: 1 },
+        { title: '💰 Оффер', description: 'Персональное предложение', delay_days: 3 },
+        { title: '🔁 Дожим', description: 'Напоминание', delay_days: 2 }
+    ];
+    
+    const result = document.getElementById('funnelResult');
+    result.innerHTML = '<div style="color:var(--muted);">⏳ Создание воронки...</div>';
+    
+    const response = await apiCall('/api/funnel/save', {
+        user_id: currentUser.id,
+        name: name,
+        steps: steps
+    });
+    if (response.success) {
+        result.innerHTML = `<div style="color:var(--green);font-weight:600;margin-bottom:8px;">✅ ${response.message}</div>
+            ${steps.map((s,i) => 
+                `<div style="padding:6px 0;border-bottom:1px solid var(--border);font-size:14px;">
+                    ${i+1}. ${s.title} — ${s.description} (${s.delay_days} д.)
+                </div>`
+            ).join('')}`;
+        showToast('✅ Воронка создана');
+    } else {
+        result.innerHTML = '<div style="color:var(--red);">❌ ' + (response.error || 'Ошибка') + '</div>';
+        showToast('❌ ' + (response.error || 'Ошибка'), '#FF4D6A');
+    }
+}
+
+async function schedulePost() {
+    if (!currentUser) { showToast('⚠️ Войдите в аккаунт', '#FFB800'); return; }
+    const text = document.getElementById('schedText').value.trim();
+    const date = document.getElementById('schedDate').value;
+    if (!text) { showToast('⚠️ Введите текст поста', '#FFB800'); return; }
+    
+    const response = await apiCall('/api/schedule/post', {
+        user_id: currentUser.id,
+        text: text,
+        tone: 'информационный',
+        scheduled_at: date || new Date().toISOString()
+    });
+    if (response.success) {
+        showToast('✅ ' + response.message);
+        loadScheduledPosts();
+        document.getElementById('schedText').value = '';
+    } else {
+        showToast('❌ ' + (response.error || 'Ошибка'), '#FF4D6A');
+    }
+}
+
+async function sendMailing() {
+    if (!currentUser) { showToast('⚠️ Войдите в аккаунт', '#FFB800'); return; }
+    const channel = document.getElementById('mailingChannel').value.trim();
+    const text = document.getElementById('mailingText').value.trim();
+    const count = parseInt(document.getElementById('mailingCount').value) || 10;
+    if (!channel || !text) { showToast('⚠️ Заполните все поля', '#FFB800'); return; }
+    
+    const response = await apiCall('/api/mailing/send', {
+        user_id: currentUser.id,
+        channel: channel,
+        text: text,
+        count: count
+    });
+    if (response.success) {
+        showToast('✅ ' + response.message);
+        document.getElementById('mailingText').value = '';
+    } else {
+        showToast('❌ ' + (response.error || 'Ошибка'), '#FF4D6A');
+    }
+}
+
+async function addProxy() {
+    if (!currentUser) { showToast('⚠️ Войдите в аккаунт', '#FFB800'); return; }
+    const ip = document.getElementById('proxyIp').value.trim();
+    const port = document.getElementById('proxyPort').value.trim();
+    if (!ip || !port) { showToast('⚠️ Введите IP и порт', '#FFB800'); return; }
+    
+    const response = await apiCall('/api/proxies/add', {
+        user_id: currentUser.id,
+        ip: ip,
+        port: port,
+        login: document.getElementById('proxyLogin').value.trim(),
+        password: document.getElementById('proxyPass').value.trim()
+    });
+    if (response.success) {
+        showToast('✅ ' + response.message);
+        loadProxies();
+    } else {
+        showToast('❌ ' + (response.error || 'Ошибка'), '#FF4D6A');
+    }
+}
+
+async function addAutoReply() {
+    if (!currentUser) { showToast('⚠️ Войдите в аккаунт', '#FFB800'); return; }
+    const keyword = document.getElementById('replyKeyword').value.trim();
+    const reply = document.getElementById('replyText').value.trim();
+    if (!keyword || !reply) { showToast('⚠️ Заполните все поля', '#FFB800'); return; }
+    
+    const response = await apiCall('/api/auto_replies/add', {
+        user_id: currentUser.id,
+        keyword: keyword,
+        reply: reply
+    });
+    if (response.success) {
+        showToast('✅ ' + response.message);
+        loadAutoReplies();
+    } else {
+        showToast('❌ ' + (response.error || 'Ошибка'), '#FF4D6A');
+    }
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    checkSession();
+    loadReviews();
+    console.log('🚀 Telegrams GPT готов!');
+});
+
+window.register = register;
+window.login = login;
+window.logout = logout;
+window.openModal = openModal;
+window.closeModal = closeModal;
+window.closeModalOutside = closeModalOutside;
+window.switchAuthTab = switchAuthTab;
+window.switchPage = switchPage;
+window.toggleSidebar = toggleSidebar;
+window.applyPromo = applyPromo;
+window.createPayment = createPayment;
+window.checkPayment = checkPayment;
+window.sendComment = sendComment;
+window.sendReactions = sendReactions;
+window.startWarmup = startWarmup;
+window.runParse = runParse;
+window.startDialog = startDialog;
+window.generateFunnel = generateFunnel;
+window.schedulePost = schedulePost;
+window.sendMailing = sendMailing;
+window.addProxy = addProxy;
+window.addAutoReply = addAutoReply;
+window.showToast = showToast;
+window.loadReviews = loadReviews;
+window.loadAccounts = loadAccounts;
+window.loadStats = loadStats;
+window.loadPromoCodes = loadPromoCodes;
+window.loadProxies = loadProxies;
+window.loadAutoReplies = loadAutoReplies;
+window.loadDialogs = loadDialogs;
+window.loadScheduledPosts = loadScheduledPosts;
+window.loadComments = loadComments;
+</script>
+</body>
+</html>
+    """)
+
+if __name__ == "__main__":
+    import uvicorn
+    print("🚀 Telegrams GPT сервер запущен!")
+    print("📱 Открой в браузере: http://localhost:8000")
+    print("🎁 Промокоды: PROMO10_1...PROMO10_10, PROMO15_1...PROMO15_15, PROMO5_1...PROMO5_5")
+    print("💳 Оплата через ЮMoney (Яндекс.Деньги)")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
