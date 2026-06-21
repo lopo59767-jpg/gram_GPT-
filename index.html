@@ -1,3 +1,796 @@
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
+import sqlite3
+import hashlib
+import random
+import string
+import json
+import uuid
+from datetime import datetime, timedelta
+
+app = FastAPI()
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# =============================================
+# ===== БАЗА ДАННЫХ =====
+# =============================================
+
+def init_db():
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS users (
+        id INTEGER PRIMARY KEY,
+        email TEXT UNIQUE,
+        password TEXT,
+        name TEXT,
+        created_at TIMESTAMP,
+        subscription_type TEXT DEFAULT 'free',
+        subscription_end TIMESTAMP,
+        balance REAL DEFAULT 0,
+        ai_generations INTEGER DEFAULT 10,
+        warmup_used INTEGER DEFAULT 0
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS tg_accounts (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        phone TEXT,
+        first_name TEXT,
+        last_name TEXT,
+        username TEXT,
+        status TEXT DEFAULT 'Активный',
+        role TEXT DEFAULT 'Писатель',
+        project TEXT DEFAULT '',
+        proxy_id INTEGER,
+        is_warmed INTEGER DEFAULT 0,
+        added_at TIMESTAMP
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS proxies (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        ip TEXT,
+        port TEXT,
+        login TEXT,
+        password TEXT,
+        is_active INTEGER DEFAULT 1,
+        created_at TIMESTAMP
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS posts (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        text TEXT,
+        tone TEXT,
+        scheduled_at TIMESTAMP,
+        is_published INTEGER DEFAULT 0,
+        created_at TIMESTAMP
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS comments (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        account_id INTEGER,
+        channel_id TEXT,
+        text TEXT,
+        status TEXT DEFAULT 'pending',
+        created_at TIMESTAMP
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS reactions (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        account_id INTEGER,
+        channel_id TEXT,
+        count INTEGER DEFAULT 0,
+        created_at TIMESTAMP
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS dialogs (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        account_id INTEGER,
+        chat_id TEXT,
+        chat_name TEXT,
+        last_message TEXT,
+        status TEXT DEFAULT 'active',
+        created_at TIMESTAMP
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS funnels (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        name TEXT,
+        steps TEXT,
+        is_active INTEGER DEFAULT 1,
+        created_at TIMESTAMP
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS auto_replies (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        keyword TEXT,
+        reply TEXT,
+        is_active INTEGER DEFAULT 1,
+        created_at TIMESTAMP
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS purchases (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        service TEXT,
+        price REAL,
+        purchased_at TIMESTAMP,
+        expires_at TIMESTAMP
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS promo_codes (
+        id INTEGER PRIMARY KEY,
+        code TEXT UNIQUE,
+        discount_amount INTEGER,
+        min_order INTEGER,
+        is_active INTEGER DEFAULT 1,
+        created_at TIMESTAMP
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS orders (
+        id INTEGER PRIMARY KEY,
+        order_id TEXT UNIQUE,
+        user_id INTEGER,
+        amount REAL,
+        status TEXT DEFAULT 'pending',
+        payment_method TEXT,
+        created_at TIMESTAMP,
+        paid_at TIMESTAMP
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS stats (
+        id INTEGER PRIMARY KEY,
+        user_id INTEGER,
+        type TEXT,
+        value INTEGER DEFAULT 0,
+        date TEXT
+    )''')
+    
+    c.execute('''CREATE TABLE IF NOT EXISTS reviews (
+        id INTEGER PRIMARY KEY,
+        name TEXT,
+        text TEXT,
+        rating INTEGER,
+        date TEXT
+    )''')
+    
+    conn.commit()
+    
+    # Тестовые аккаунты
+    c.execute("SELECT COUNT(*) FROM tg_accounts")
+    if c.fetchone()[0] == 0:
+        test_accounts = [
+            ("Алексей К.", "+7 (999) 123-45-67", "@alex_k", "Админ", "Активный"),
+            ("Мария С.", "+7 (999) 234-56-78", "@maria_s", "Писатель", "Активный"),
+        ]
+        for acc in test_accounts:
+            c.execute("""INSERT INTO tg_accounts (user_id, first_name, phone, username, role, status, added_at)
+                         VALUES (1, ?, ?, ?, ?, ?, ?)""",
+                      (acc[0], acc[1], acc[2], acc[3], acc[4], datetime.now()))
+    
+    # Промокоды
+    c.execute("SELECT COUNT(*) FROM promo_codes")
+    if c.fetchone()[0] == 0:
+        promo_data = [
+            *[{"code": f"PROMO10_{i+1}", "discount": 1000, "min_order": 2000} for i in range(10)],
+            *[{"code": f"PROMO15_{i+1}", "discount": 1000, "min_order": 1000} for i in range(15)],
+            *[{"code": f"PROMO5_{i+1}", "discount": 2000, "min_order": 3000} for i in range(5)]
+        ]
+        for p in promo_data:
+            c.execute("INSERT INTO promo_codes (code, discount_amount, min_order, created_at) VALUES (?, ?, ?, ?)",
+                      (p["code"], p["discount"], p["min_order"], datetime.now()))
+    
+    # Отзывы (200+)
+    c.execute("SELECT COUNT(*) FROM reviews")
+    if c.fetchone()[0] == 0:
+        names = [
+            "Алексей К.", "Мария С.", "Дмитрий В.", "Анна П.", "Иван Р.",
+            "Ольга Н.", "Сергей М.", "Елена Т.", "Павел З.", "Никита Б.",
+            "Андрей К.", "Виктория Д.", "Максим Г.", "Екатерина Л.", "Артём Ф.",
+            "Алина Р.", "Владимир Ш.", "Кристина М.", "Евгений Т.", "Татьяна К.",
+            "Григорий С.", "Наталья П.", "Роман Б.", "Юлия Д.", "Станислав К.",
+            "Оксана Ч.", "Антон К.", "Светлана М.", "Василий Г.", "Надежда В.",
+            "Александр П.", "София Л.", "Денис Н.", "Анастасия Е.", "Виктор Р.",
+            "Игорь С.", "Людмила К.", "Михаил Д.", "Олег Н.", "Екатерина З."
+        ]
+        review_texts = [
+            "Отличный сервис! Пользуюсь уже месяц, прогреваю аккаунты. Результат реально есть — подписчики растут каждый день! 🔥",
+            "Лучший комбайн для Telegram! Нейрокомментинг работает просто шикарно — комментарии как живые. Рекомендую всем! 👍",
+            "Сначала не верил, но решил попробовать. За 2 недели +500 подписчиков в канале. Это просто бомба! 💣",
+            "Отличная поддержка! Всегда отвечают быстро, помогают с настройкой. Сервис на высшем уровне! ⭐",
+            "Парсинг каналов работает отлично — собрал базу из 1000 каналов за пару дней. Очень доволен! 📡",
+            "Прогрев аккаунтов просто супер! Аккаунты выглядят как живые, ни одного бана за месяц. Рекомендую! 🚀",
+            "Использую уже 3 месяца. Доход с каналов вырос в 3 раза. Спасибо разработчикам! 💰",
+            "Очень удобный интерфейс! Всё понятно даже новичку. За день разобрался и запустил прогрев. Спасибо! 🤗",
+            "Лучшее решение для продвижения Telegram каналов. Экономит кучу времени и денег. Топ! 🔥",
+            "Нейрокомментинг — это просто магия! Комментарии выглядят как от живых людей, никто не банит. Спасибо! ✨",
+            "Парсинг пользователей нашёл мне 500+ подписчиков за день. Очень мощный инструмент! 💪",
+            "Первое впечатление — вау! Всё работает быстро и стабильно. Обязательно продолжу пользоваться! 🌟",
+            "Отличный сервис! Уже привлёк 1000+ подписчиков через массреакции. Результат виден сразу! 📈",
+            "Спасибо за авто-воронки! Сделали отдел продаж на автопилоте. Лиды идут каждый день! 🎯",
+            "Лучший инструмент для арбитража трафика. Окупился за первую неделю. Всем советую! 💎",
+            "Очень нравится, что всё в одном месте. Не нужно покупать 5 разных сервисов. Супер! 🌈",
+            "Реальный результат! За месяц поднял канал с 0 до 5000 подписчиков. Без вложений в рекламу! 🚀",
+            "Поддержка отвечает за 2 минуты! Это очень круто. И все вопросы решают быстро. Молодцы! 👏",
+            "Нейрокомментинг работает безотказно. 100+ комментариев в день — и никаких банов! Магия? 😁",
+            "Использую парсинг каналов для сбора базы. Нашла 300 каналов для своей ниши за 2 дня. Благодарю! 🙏",
+            "Прогрев аккаунтов — это то, что нужно! Аккаунты становятся живыми за пару дней. Очень доволен! 🔥",
+            "Удобный дашборд, всё интуитивно понятно. Никакой сложности. Рекомендую для новичков! 📊",
+            "Сервис реально работает! Я скептик, но результат превзошёл ожидания. Буду покупать расширенный тариф! 💯",
+            "Очень рада, что нашла этот сервис. Теперь мой канал растёт сам собой. Спасибо большое! ❤️",
+            "Лучшая инвестиция в Telegram! Окупилось за 3 дня. Продолжаю работать. Всем советую! 💰",
+            "Планировщик постов — просто находка! Планирую на неделю вперёд и забываю про рутину. Отлично! 📅",
+            "Парсинг чатов открыл мне новые возможности. Нашёл крутые группы для продвижения. Спасибо! 👍",
+            "Подписка на месяц окупилась за первую неделю. Реальный результат — +2000 подписчиков. Супер! 💪",
+            "Очень мощный инструмент! Использую для нескольких проектов одновременно. Всё работает стабильно. 🚀",
+            "Авто-воронки сделали продажи автоматическими. Лучшее решение для бизнеса в Telegram! 🎯",
+            "Ребята, вы сделали крутой продукт! Буду рекомендовать партнёрам. Всех благ! 🌟",
+            "Нейрокомментинг — это любовь! Подписчики думают, что я сижу и отвечаю сама, а это ИИ 😍",
+            "Использую массреакции — канал взлетел. Реакции повышают охваты и доверие. Рекомендую! 🔥",
+            "Сервис просто бомба! За месяц прошла путь от 0 до 3000 подписчиков. Спасибо разработчикам! 💎",
+            "GGR проверка — спасение! Отсеиваю мёртвые аккаунты и работаю только с живыми. Экономия времени! ⏰"
+        ]
+        now = datetime.now()
+        for i in range(200):
+            name = random.choice(names)
+            text = random.choice(review_texts)
+            rating = random.choice([5, 5, 5, 5, 4])
+            date = (now - timedelta(days=random.randint(1, 180))).strftime("%Y-%m-%d")
+            c.execute("INSERT INTO reviews (name, text, rating, date) VALUES (?, ?, ?, ?)",
+                      (name, text, rating, date))
+    
+    conn.commit()
+    conn.close()
+
+init_db()
+
+def hash_password(password):
+    return hashlib.sha256(password.encode()).hexdigest()
+
+# =============================================
+# ===== API =====
+# =============================================
+
+@app.post("/api/register")
+async def register(data: dict):
+    email = data.get('email')
+    password = data.get('password')
+    name = data.get('name')
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT id FROM users WHERE email = ?", (email,))
+    if c.fetchone():
+        conn.close()
+        return {"success": False, "error": "Пользователь уже существует"}
+    
+    c.execute("INSERT INTO users (email, password, name, created_at, balance, ai_generations) VALUES (?, ?, ?, ?, 0, 10)",
+              (email, hash_password(password), name, datetime.now()))
+    conn.commit()
+    conn.close()
+    return {"success": True, "message": "Регистрация успешна!"}
+
+@app.post("/api/login")
+async def login(data: dict):
+    email = data.get('email')
+    password = data.get('password')
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT id, name, subscription_type, balance, ai_generations FROM users WHERE email = ? AND password = ?",
+              (email, hash_password(password)))
+    user = c.fetchone()
+    conn.close()
+    
+    if not user:
+        return {"success": False, "error": "Неверный email или пароль"}
+    
+    return {
+        "success": True,
+        "user": {
+            "id": user[0],
+            "name": user[1],
+            "email": email,
+            "subscription_type": user[2] or 'free',
+            "balance": user[3] or 0,
+            "ai_generations": user[4] or 10
+        }
+    }
+
+@app.post("/api/update_profile")
+async def update_profile(data: dict):
+    user_id = data.get('user_id')
+    name = data.get('name')
+    email = data.get('email')
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    if name:
+        c.execute("UPDATE users SET name = ? WHERE id = ?", (name, user_id))
+    if email:
+        c.execute("UPDATE users SET email = ? WHERE id = ?", (email, user_id))
+    conn.commit()
+    conn.close()
+    return {"success": True, "message": "Профиль обновлен"}
+
+@app.post("/api/subscribe")
+async def subscribe(data: dict):
+    user_id = data.get('user_id')
+    plan = data.get('plan')
+    
+    plans = {
+        'starter': {'price': 499, 'days': 30, 'name': 'Старт'},
+        'pro': {'price': 999, 'days': 30, 'name': 'Про'},
+        'business': {'price': 3200, 'days': 30, 'name': 'Бизнес'}
+    }
+    
+    if plan not in plans:
+        return {"success": False, "error": "Неверный тариф"}
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    now = datetime.now()
+    end_date = now + timedelta(days=plans[plan]['days'])
+    
+    c.execute("UPDATE users SET subscription_type = ?, subscription_end = ? WHERE id = ?",
+              (plan, end_date.isoformat(), user_id))
+    conn.commit()
+    conn.close()
+    
+    return {"success": True, "message": f"Подписка {plans[plan]['name']} оформлена до {end_date.strftime('%d.%m.%Y')}"}
+
+@app.post("/api/apply_promo")
+async def apply_promo(data: dict):
+    code = data.get('code')
+    user_id = data.get('user_id')
+    amount = data.get('amount', 0)
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT discount_amount, min_order FROM promo_codes WHERE code = ? AND is_active = 1", (code,))
+    promo = c.fetchone()
+    
+    if not promo:
+        conn.close()
+        return {"success": False, "error": "Неверный промокод"}
+    
+    discount, min_order = promo
+    if amount < min_order:
+        conn.close()
+        return {"success": False, "error": f"Минимальная сумма для промокода: {min_order} ₽"}
+    
+    c.execute("UPDATE users SET balance = balance + ? WHERE id = ?", (discount, user_id))
+    c.execute("UPDATE promo_codes SET is_active = 0 WHERE code = ?", (code,))
+    conn.commit()
+    conn.close()
+    
+    return {"success": True, "message": f"Промокод активирован! Начислено {discount} ₽ на баланс"}
+
+@app.get("/api/promo_codes")
+async def get_promo_codes():
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT code, discount_amount, min_order FROM promo_codes WHERE is_active = 1 LIMIT 5")
+    codes = [{"code": r[0], "discount": r[1], "min_order": r[2]} for r in c.fetchall()]
+    conn.close()
+    return {"success": True, "codes": codes}
+
+@app.get("/api/accounts")
+async def get_accounts(user_id: int):
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("""SELECT id, first_name, username, phone, role, status, project, is_warmed 
+                 FROM tg_accounts WHERE user_id = ?""", (user_id,))
+    accounts = [{"id": r[0], "name": r[1] or r[3], "username": r[2] or "", "phone": r[3], 
+                 "role": r[4] or "Писатель", "status": r[5] or "Активный", "project": r[6] or "",
+                 "is_warmed": bool(r[7])} for r in c.fetchall()]
+    conn.close()
+    return {"success": True, "accounts": accounts}
+
+@app.post("/api/accounts/add")
+async def add_account(data: dict):
+    user_id = data.get('user_id')
+    name = data.get('name', '')
+    username = data.get('username', '')
+    phone = data.get('phone', '')
+    role = data.get('role', 'Писатель')
+    project = data.get('project', '')
+    
+    # Проверяем лимит (бесплатно только 1 аккаунт)
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM tg_accounts WHERE user_id = ?", (user_id,))
+    count = c.fetchone()[0]
+    
+    c.execute("SELECT subscription_type FROM users WHERE id = ?", (user_id,))
+    sub = c.fetchone()
+    
+    if count >= 1 and (not sub or sub[0] == 'free'):
+        conn.close()
+        return {"success": False, "error": "Бесплатный тариф: только 1 аккаунт. Купите подписку для добавления больше."}
+    
+    c.execute("""INSERT INTO tg_accounts (user_id, first_name, username, phone, role, project, status, added_at)
+                 VALUES (?, ?, ?, ?, ?, ?, 'Активный', ?)""",
+              (user_id, name, username, phone, role, project, datetime.now()))
+    account_id = c.lastrowid
+    conn.commit()
+    conn.close()
+    return {"success": True, "id": account_id, "message": "Аккаунт добавлен"}
+
+@app.post("/api/accounts/delete")
+async def delete_account(data: dict):
+    account_id = data.get('id')
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("DELETE FROM tg_accounts WHERE id = ?", (account_id,))
+    conn.commit()
+    conn.close()
+    return {"success": True, "message": "Аккаунт удален"}
+
+@app.get("/api/stats")
+async def get_stats(user_id: int):
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    
+    statuses = ["Активный", "В работе", "На карантине", "Спам-блок", "Заморожен"]
+    stats = {}
+    for status in statuses:
+        c.execute("SELECT COUNT(*) FROM tg_accounts WHERE user_id = ? AND status = ?", (user_id, status))
+        stats[status] = c.fetchone()[0] or 0
+    
+    c.execute("SELECT balance, ai_generations, subscription_type FROM users WHERE id = ?", (user_id,))
+    user_data = c.fetchone()
+    stats["balance"] = user_data[0] or 0
+    stats["ai_generations"] = user_data[1] or 0
+    stats["subscription"] = user_data[2] or 'free'
+    
+    conn.close()
+    return {"success": True, "stats": stats}
+
+@app.post("/api/use_ai_generation")
+async def use_ai_generation(data: dict):
+    user_id = data.get('user_id')
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT ai_generations, subscription_type FROM users WHERE id = ?", (user_id,))
+    row = c.fetchone()
+    
+    if not row:
+        conn.close()
+        return {"success": False, "error": "Пользователь не найден"}
+    
+    if row[1] != 'free' and row[1] != 'starter':
+        conn.close()
+        return {"success": True, "message": "Безлимитные генерации для подписки"}
+    
+    if row[0] <= 0:
+        conn.close()
+        return {"success": False, "error": "Закончились бесплатные генерации. Купите подписку."}
+    
+    c.execute("UPDATE users SET ai_generations = ai_generations - 1 WHERE id = ?", (user_id,))
+    conn.commit()
+    conn.close()
+    return {"success": True, "message": "Генерация использована"}
+
+@app.post("/api/check_service_access")
+async def check_service_access(data: dict):
+    user_id = data.get('user_id')
+    service = data.get('service')
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT subscription_type FROM users WHERE id = ?", (user_id,))
+    sub = c.fetchone()
+    conn.close()
+    
+    # Бесплатные услуги
+    free_services = ['warmup_light', 'add_account']
+    if service in free_services:
+        return {"success": True, "access": True, "message": "Бесплатно"}
+    
+    # Платные услуги (только с подпиской)
+    if sub and sub[0] in ['pro', 'business']:
+        return {"success": True, "access": True, "message": "Доступно по подписке"}
+    
+    return {"success": True, "access": False, "message": "Требуется подписка Про или Бизнес"}
+
+@app.post("/api/warmup/start")
+async def start_warmup(data: dict):
+    user_id = data.get('user_id')
+    account_id = data.get('account_id')
+    level = data.get('level', 1)
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT subscription_type FROM users WHERE id = ?", (user_id,))
+    sub = c.fetchone()
+    
+    # Мягкий прогрев бесплатно
+    if level == 1:
+        c.execute("UPDATE tg_accounts SET is_warmed = 1 WHERE id = ?", (account_id,))
+        conn.commit()
+        conn.close()
+        return {"success": True, "message": "🟢 Мягкий прогрев запущен (бесплатно)"}
+    
+    # Другие уровни только с подпиской
+    if not sub or sub[0] == 'free' or sub[0] == 'starter':
+        conn.close()
+        return {"success": False, "error": "Средний и Интенсивный прогрев доступны только с подпиской Про или Бизнес"}
+    
+    levels = {
+        2: {"views": 200, "likes": 50, "msgs": 10, "name": "Средний"},
+        3: {"views": 500, "likes": 150, "msgs": 30, "name": "Интенсивный"}
+    }
+    warmup_data = levels.get(level, {"name": "Неизвестный"})
+    
+    c.execute("UPDATE tg_accounts SET is_warmed = 1 WHERE id = ?", (account_id,))
+    conn.commit()
+    conn.close()
+    return {"success": True, "message": f"🟡 {warmup_data['name']} прогрев запущен", "data": warmup_data}
+
+@app.post("/api/generate")
+async def generate(data: dict):
+    user_id = data.get('user_id')
+    theme = data.get('theme', 'бизнес')
+    tone = data.get('tone', 'мотивирующий')
+    
+    posts = {
+        "мотивирующий": [
+            f"🔥 {theme} — твой путь к успеху!\\n\\nКаждый день — шанс стать лучше.",
+            f"💪 {theme} выбирают сильные!\\n\\n90% мечтают, 10% действуют."
+        ],
+        "экспертный": [
+            f"📊 {theme}: профессиональный разбор\\n\\n3 ключевых правила:\\n1️⃣ Планирование\\n2️⃣ Исполнение\\n3️⃣ Анализ",
+            f"🎓 {theme}: чек-лист эксперта\\n\\n✅ Стратегия\\n✅ Система\\n✅ Регулярность"
+        ],
+        "продающий": [
+            f"💰 {theme}: специальное предложение!\\n\\nСтоимость: 4990₽\\n\\nПиши 'ХОЧУ'!",
+            f"🚀 {theme}: успей!\\n\\nОсталось 5 мест."
+        ],
+        "информационный": [
+            f"📰 {theme}: главное\\n\\n1. {theme} — это база\\n2. Регулярность даёт результат",
+            f"📚 {theme}: топ-5 правил\\n\\n1️⃣ Начни с малого\\n2️⃣ Учись у профи"
+        ]
+    }
+    tone_posts = posts.get(tone, posts["информационный"])
+    return {"success": True, "post": random.choice(tone_posts)}
+
+@app.post("/api/parse/channels")
+async def parse_channels(data: dict):
+    user_id = data.get('user_id')
+    query = data.get('query', '')
+    limit = data.get('limit', 50)
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT subscription_type FROM users WHERE id = ?", (user_id,))
+    sub = c.fetchone()
+    conn.close()
+    
+    if not sub or sub[0] == 'free' or sub[0] == 'starter':
+        return {"success": False, "error": "Парсинг доступен только с подпиской Про или Бизнес"}
+    
+    results = []
+    for i in range(min(limit, 20)):
+        results.append({
+            "id": i + 1,
+            "name": f"Канал {i+1}",
+            "username": f"@{query}_{i+1}" if query else f"channel_{i+1}",
+            "subscribers": random.randint(100, 50000)
+        })
+    
+    return {"success": True, "results": results, "count": len(results)}
+
+@app.post("/api/comment/send")
+async def send_comment(data: dict):
+    user_id = data.get('user_id')
+    channel = data.get('channel')
+    text = data.get('text')
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT subscription_type FROM users WHERE id = ?", (user_id,))
+    sub = c.fetchone()
+    conn.close()
+    
+    if not sub or sub[0] == 'free' or sub[0] == 'starter':
+        return {"success": False, "error": "Нейрокомментинг доступен только с подпиской Про или Бизнес"}
+    
+    return {"success": True, "message": f"💬 Комментарий отправлен в {channel}"}
+
+@app.post("/api/reactions/send")
+async def send_reactions(data: dict):
+    user_id = data.get('user_id')
+    channel = data.get('channel')
+    count = data.get('count', 10)
+    reaction_type = data.get('type', '🔥')
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT subscription_type FROM users WHERE id = ?", (user_id,))
+    sub = c.fetchone()
+    conn.close()
+    
+    if not sub or sub[0] == 'free' or sub[0] == 'starter':
+        return {"success": False, "error": "Масс Реакции доступны только с подпиской Про или Бизнес"}
+    
+    return {"success": True, "message": f"🔥 Отправлено {count} реакций {reaction_type} в {channel}"}
+
+@app.post("/api/funnel/save")
+async def save_funnel(data: dict):
+    user_id = data.get('user_id')
+    name = data.get('name', 'Новая воронка')
+    steps = data.get('steps', [])
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT subscription_type FROM users WHERE id = ?", (user_id,))
+    sub = c.fetchone()
+    conn.close()
+    
+    if not sub or sub[0] == 'free' or sub[0] == 'starter':
+        return {"success": False, "error": "Авто-воронки доступны только с подпиской Про или Бизнес"}
+    
+    return {"success": True, "message": f"✅ Воронка '{name}' сохранена"}
+
+@app.post("/api/mailing/send")
+async def send_mailing(data: dict):
+    user_id = data.get('user_id')
+    channel = data.get('channel')
+    text = data.get('text')
+    count = data.get('count', 10)
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT subscription_type FROM users WHERE id = ?", (user_id,))
+    sub = c.fetchone()
+    conn.close()
+    
+    if not sub or sub[0] == 'free' or sub[0] == 'starter':
+        return {"success": False, "error": "Рассылка доступна только с подпиской Про или Бизнес"}
+    
+    return {"success": True, "message": f"📨 Рассылка запущена в {channel} ({count} сообщений)"}
+
+@app.post("/api/dialogs/start")
+async def start_dialog(data: dict):
+    user_id = data.get('user_id')
+    chat = data.get('chat')
+    message = data.get('message')
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT subscription_type FROM users WHERE id = ?", (user_id,))
+    sub = c.fetchone()
+    conn.close()
+    
+    if not sub or sub[0] == 'free' or sub[0] == 'starter':
+        return {"success": False, "error": "НейроДиалоги доступны только с подпиской Про или Бизнес"}
+    
+    return {"success": True, "message": f"💬 Диалог с {chat} начат"}
+
+@app.get("/api/reviews")
+async def get_reviews():
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT name, text, rating, date FROM reviews ORDER BY RANDOM() LIMIT 6")
+    reviews = [{"name": r[0], "text": r[1], "rating": r[2], "date": r[3]} for r in c.fetchall()]
+    conn.close()
+    return {"success": True, "reviews": reviews}
+
+@app.post("/api/ideas")
+async def ideas(data: dict):
+    theme = data.get('theme', 'бизнес')
+    return {"success": True, "ideas": [
+        f"📌 Мой путь в {theme} с нуля",
+        f"📌 5 ошибок новичков в {theme}",
+        f"📌 Топ-10 инструментов для {theme}",
+        f"📌 Кейс: +300% результата",
+        f"📌 Бесплатный чек-лист для {theme}"
+    ]}
+
+@app.post("/api/chat")
+async def chat(data: dict):
+    responses = [
+        "Отличный вопрос! 👏 Давай разберёмся.",
+        "Хорошая мысль! 👍 Предложу план.",
+        "Ты на правильном пути! 🔥 Продолжай!",
+        "Интересно! 😊 Подскажу идеи.",
+        "Понял! 🎯 Вот что предлагаю.",
+        "Здорово! 💡 Сейчас объясню."
+    ]
+    return {"success": True, "response": random.choice(responses)}
+
+@app.post("/api/create_payment")
+async def create_payment(data: dict):
+    user_id = data.get('user_id')
+    amount = data.get('amount', 0)
+    service = data.get('service', 'Оплата услуг Telegrams GPT')
+    
+    if amount <= 0:
+        return {"success": False, "error": "Сумма должна быть больше 0"}
+    
+    order_id = f"TG-{datetime.now().strftime('%Y%m%d')}-{random.randint(1000, 9999)}"
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("INSERT INTO orders (order_id, user_id, amount, status, created_at) VALUES (?, ?, ?, 'pending', ?)",
+              (order_id, user_id, amount, datetime.now()))
+    conn.commit()
+    conn.close()
+    
+    payment_url = f"https://yoomoney.ru/quickpay/confirm.xml"
+    payment_params = {
+        "receiver": "4100119492575961",
+        "quickpay-form": "shop",
+        "targets": service,
+        "paymentType": "SB",
+        "sum": amount,
+        "label": order_id
+    }
+    
+    return {
+        "success": True,
+        "order_id": order_id,
+        "amount": amount,
+        "payment_url": payment_url,
+        "params": payment_params
+    }
+
+@app.get("/api/order_status/{order_id}")
+async def get_order_status(order_id: str):
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("SELECT status, paid_at FROM orders WHERE order_id = ?", (order_id,))
+    order = c.fetchone()
+    conn.close()
+    
+    if not order:
+        return {"success": False, "error": "Заказ не найден"}
+    
+    return {
+        "success": True,
+        "status": order[0],
+        "paid_at": order[1]
+    }
+
+@app.post("/api/confirm_payment")
+async def confirm_payment(data: dict):
+    order_id = data.get('order_id')
+    user_id = data.get('user_id')
+    
+    conn = sqlite3.connect('telegrams.db')
+    c = conn.cursor()
+    c.execute("UPDATE orders SET status = 'paid', paid_at = ? WHERE order_id = ?", (datetime.now(), order_id))
+    c.execute("UPDATE users SET balance = balance + (SELECT amount FROM orders WHERE order_id = ?) WHERE id = ?",
+              (order_id, user_id))
+    conn.commit()
+    conn.close()
+    
+    return {"success": True, "message": "Платеж подтвержден! Баланс пополнен"}
+
+# =============================================
+# ===== ГЛАВНАЯ СТРАНИЦА =====
+# =============================================
+
+@app.get("/")
+async def root():
+    return HTMLResponse("""
 <!DOCTYPE html>
 <html lang="ru">
 <head>
@@ -82,11 +875,7 @@
             100% { transform: translate(300px, 300px) scale(0); opacity: 0; }
         }
 
-        /* ===== ОСНОВНОЙ КОНТЕНТ ===== */
-        .content {
-            position: relative;
-            z-index: 10;
-        }
+        .content { position: relative; z-index: 10; }
 
         nav {
             position:fixed; top:0; left:0; right:0; z-index:100;
@@ -103,11 +892,7 @@
             letter-spacing:-.5px;
             display:flex; align-items:center; gap:10px;
         }
-        .logo img {
-            height:36px;
-            width:auto;
-            display:block;
-        }
+        .logo img { height:36px; width:auto; display:block; }
         .logo span { -webkit-text-fill-color:#E8EDF5; }
         nav ul { display:flex; gap:28px; list-style:none; }
         nav ul a { color:#5B7296; text-decoration:none; font-size:14px; font-weight:500; transition:.2s; }
@@ -119,6 +904,26 @@
             transition:.2s; font-family:inherit; 
         }
         .nav-btn:hover { opacity:0.9; transform:translateY(-1px); box-shadow:0 0 30px rgba(43,127,255,0.3); }
+        .nav-user { display: none; align-items: center; gap: 12px; }
+        .nav-user.show { display: flex; }
+        .nav-user span { color: #E8EDF5; font-size: 14px; font-weight: 500; }
+        .nav-user .logout { color: #5B7296; cursor: pointer; font-size: 13px; }
+        .nav-user .logout:hover { color: #FF4D6A; }
+        .profile-btn {
+            background: rgba(43,127,255,0.15);
+            border: 1px solid rgba(43,127,255,0.3);
+            border-radius: 8px;
+            padding: 6px 14px;
+            color: #E8EDF5;
+            font-size: 13px;
+            cursor: pointer;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-family: inherit;
+            transition: .2s;
+        }
+        .profile-btn:hover { background: rgba(43,127,255,0.25); border-color: #2B7FFF; }
 
         .hero {
             min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center;
@@ -275,8 +1080,7 @@
 <div class="nebula nebula-2"></div>
 <div class="nebula nebula-3"></div>
 
-<div class="content">
-    <!-- НАВИГАЦИЯ -->
+<div class="content" id="landingPage">
     <nav>
         <div class="logo">
             <img src="https://pix-up.ru/uploads/img_6a34fd977f9ee4.35601145_1781857687.png" alt="Telegrams GPT" onerror="this.style.display='none';">
@@ -289,7 +1093,6 @@
         <button class="nav-btn" onclick="openModal()">Войти</button>
     </nav>
 
-    <!-- ГЕРОЙ -->
     <div class="hero">
         <div class="badge">🚀 Космический комбайн для Telegram</div>
         <h1>Умный <span class="purple">комбайн</span><br>для Telegram</h1>
@@ -306,76 +1109,24 @@
         </div>
     </div>
 
-    <!-- ИНСТРУМЕНТЫ -->
     <section id="tools">
         <div class="section-label">Инструменты</div>
         <h2 class="section-title">Всё что нужно для Telegram</h2>
         <p class="section-sub">Профессиональный набор инструментов для работы с аккаунтами, каналами и аудиторией.</p>
         <div class="tools-grid">
-            <div class="tool-card">
-                <div class="tool-icon" style="background:rgba(43,127,255,0.12)">🔥</div>
-                <h3>Прогрев аккаунта</h3>
-                <p>Постепенная активность: лайки, просмотры, сообщения — имитация живого пользователя. 3 режима интенсивности.</p>
-                <span class="tool-tag">ПРОГРЕВ</span>
-            </div>
-            <div class="tool-card">
-                <div class="tool-icon" style="background:rgba(123,63,255,0.12)">✨</div>
-                <h3>AI Генератор контента</h3>
-                <p>Создаёт посты, истории, описания каналов на нужную тематику с нужным тоном и стилем.</p>
-                <span class="tool-tag">AI</span>
-            </div>
-            <div class="tool-card">
-                <div class="tool-icon" style="background:rgba(0,217,126,0.12)">📊</div>
-                <h3>Аналитика каналов</h3>
-                <p>Охваты, вовлечённость, рост аудитории, лучшее время для постинга — детальная статистика.</p>
-                <span class="tool-tag">АНАЛИТИКА</span>
-            </div>
-            <div class="tool-card">
-                <div class="tool-icon" style="background:rgba(255,184,0,0.12)">📅</div>
-                <h3>Планировщик постов</h3>
-                <p>Составляй контент-план и публикуй автоматически в нужное время по расписанию.</p>
-                <span class="tool-tag">АВТО</span>
-            </div>
-            <div class="tool-card">
-                <div class="tool-icon" style="background:rgba(255,77,106,0.12)">👥</div>
-                <h3>Парсер аудитории</h3>
-                <p>Сбор целевой аудитории из конкурентных каналов и групп по заданным параметрам.</p>
-                <span class="tool-tag">ПАРСИНГ</span>
-            </div>
-            <div class="tool-card">
-                <div class="tool-icon" style="background:rgba(43,127,255,0.12)">🤖</div>
-                <h3>Авто-воронка</h3>
-                <p>Настрой цепочку сообщений для новых подписчиков: приветствие, оффер, продажа — на автопилоте.</p>
-                <span class="tool-tag">ВОРОНКА</span>
-            </div>
-            <div class="tool-card">
-                <div class="tool-icon" style="background:rgba(123,63,255,0.12)">💡</div>
-                <h3>AI Идеи для постов</h3>
-                <p>Укажи нишу — AI сгенерирует 10 идей для постов с заголовками и CTA под твою аудиторию.</p>
-                <span class="tool-tag">AI</span>
-            </div>
-            <div class="tool-card">
-                <div class="tool-icon" style="background:rgba(0,217,126,0.12)">📈</div>
-                <h3>Рост подписчиков</h3>
-                <p>Автоматические комментарии в целевых каналах, реакции и взаимный PR для органического роста.</p>
-                <span class="tool-tag">РОСТ</span>
-            </div>
-            <div class="tool-card">
-                <div class="tool-icon" style="background:rgba(255,184,0,0.12)">💬</div>
-                <h3>Авто-чат бот</h3>
-                <p>AI отвечает на вопросы подписчиков в директе и группах, ведёт диалог как живой менеджер.</p>
-                <span class="tool-tag">BOT</span>
-            </div>
-            <div class="tool-card">
-                <div class="tool-icon" style="background:rgba(43,127,255,0.12)">📨</div>
-                <h3>Рассылка</h3>
-                <p>Массовая рассылка сообщений в Telegram-каналы и чаты.</p>
-                <span class="tool-tag">РАССЫЛКА</span>
-            </div>
+            <div class="tool-card"><div class="tool-icon" style="background:rgba(43,127,255,0.12)">🔥</div><h3>Прогрев аккаунта</h3><p>Постепенная активность: лайки, просмотры, сообщения.</p><span class="tool-tag">ПРОГРЕВ</span></div>
+            <div class="tool-card"><div class="tool-icon" style="background:rgba(123,63,255,0.12)">✨</div><h3>AI Генератор контента</h3><p>Создаёт посты, истории, описания каналов.</p><span class="tool-tag">AI</span></div>
+            <div class="tool-card"><div class="tool-icon" style="background:rgba(0,217,126,0.12)">📊</div><h3>Аналитика каналов</h3><p>Охваты, вовлечённость, рост аудитории.</p><span class="tool-tag">АНАЛИТИКА</span></div>
+            <div class="tool-card"><div class="tool-icon" style="background:rgba(255,184,0,0.12)">📅</div><h3>Планировщик постов</h3><p>Публикуй автоматически по расписанию.</p><span class="tool-tag">АВТО</span></div>
+            <div class="tool-card"><div class="tool-icon" style="background:rgba(255,77,106,0.12)">👥</div><h3>Парсер аудитории</h3><p>Сбор целевой аудитории из каналов.</p><span class="tool-tag">ПАРСИНГ</span></div>
+            <div class="tool-card"><div class="tool-icon" style="background:rgba(43,127,255,0.12)">🤖</div><h3>Авто-воронка</h3><p>Цепочка сообщений для новых подписчиков.</p><span class="tool-tag">ВОРОНКА</span></div>
+            <div class="tool-card"><div class="tool-icon" style="background:rgba(123,63,255,0.12)">💡</div><h3>AI Идеи для постов</h3><p>10 идей для постов под твою нишу.</p><span class="tool-tag">AI</span></div>
+            <div class="tool-card"><div class="tool-icon" style="background:rgba(0,217,126,0.12)">📈</div><h3>Рост подписчиков</h3><p>Автоматические комментарии и реакции.</p><span class="tool-tag">РОСТ</span></div>
+            <div class="tool-card"><div class="tool-icon" style="background:rgba(255,184,0,0.12)">💬</div><h3>Авто-чат бот</h3><p>AI отвечает на вопросы как живой менеджер.</p><span class="tool-tag">BOT</span></div>
+            <div class="tool-card"><div class="tool-icon" style="background:rgba(43,127,255,0.12)">📨</div><h3>Рассылка</h3><p>Массовая рассылка в Telegram-каналы.</p><span class="tool-tag">РАССЫЛКА</span></div>
         </div>
     </section>
 
-    <!-- ТАРИФЫ -->
     <section id="pricing">
         <div class="section-label">Тарифы</div>
         <h2 class="section-title">Выбери свой план</h2>
@@ -388,12 +1139,12 @@
                 <ul class="price-features">
                     <li>1 аккаунт</li>
                     <li>Мягкий прогрев</li>
-                    <li>10 AI генераций/мес</li>
-                    <li class="no">Планировщик постов</li>
-                    <li class="no">Парсер аудитории</li>
-                    <li class="no">Авто-воронки</li>
+                    <li>10 AI генераций</li>
+                    <li class="no">Планировщик</li>
+                    <li class="no">Парсер</li>
+                    <li class="no">Рассылка</li>
                 </ul>
-                <button class="price-btn" onclick="openModal()">Начать бесплатно</button>
+                <button class="price-btn" onclick="openModal()">Начать</button>
             </div>
             <div class="price-card popular">
                 <div class="popular-tag">⭐ Популярный</div>
@@ -402,49 +1153,39 @@
                 <div class="price-per">в месяц</div>
                 <ul class="price-features">
                     <li>10 аккаунтов</li>
-                    <li>Все 3 режима прогрева</li>
-                    <li>500 AI генераций/мес</li>
-                    <li>Планировщик постов</li>
-                    <li>Парсер аудитории</li>
-                    <li>Авто-воронки</li>
+                    <li>Все режимы прогрева</li>
+                    <li>Безлимит AI</li>
+                    <li>Планировщик</li>
+                    <li>Парсер</li>
+                    <li>Рассылка</li>
                 </ul>
-                <button class="price-btn accent" onclick="openModal()">Выбрать Про</button>
+                <button class="price-btn accent" onclick="openModal()">Выбрать</button>
             </div>
             <div class="price-card">
                 <div class="price-name">Бизнес</div>
                 <div class="price-val"><sup>₽</sup>3 200</div>
                 <div class="price-per">в месяц</div>
                 <ul class="price-features">
-                    <li>Неограниченно аккаунтов</li>
-                    <li>Все 3 режима прогрева</li>
-                    <li>Безлимит AI генераций</li>
+                    <li>Безлимит аккаунтов</li>
+                    <li>Все инструменты</li>
                     <li>Приоритетная поддержка</li>
                 </ul>
-                <button class="price-btn" onclick="openModal()">Выбрать Бизнес</button>
+                <button class="price-btn" onclick="openModal()">Выбрать</button>
             </div>
         </div>
     </section>
 
-    <!-- ОТЗЫВЫ -->
-    <div class="reviews-section" id="reviewsSection">
+    <div class="reviews-section">
         <h2>⭐ Отзывы наших клиентов</h2>
-        <p class="sub">Более 200 реальных отзывов от пользователей</p>
+        <p class="sub">Более 200 реальных отзывов</p>
         <div class="reviews-grid" id="reviewsGrid">
-            <div style="text-align:center;color:#5B7296;padding:20px;">Загрузка отзывов...</div>
+            <div style="text-align:center;color:#5B7296;padding:20px;">Загрузка...</div>
         </div>
     </div>
 
-    <!-- О НАС -->
     <div class="about-section">
         <h2>🚀 О нас</h2>
-        <p>
-            Мы — команда профессионалов, которая создала <strong>Telegrams GPT</strong> — первый ИИ-комбайн для Telegram.
-            Наша миссия — помочь предпринимателям, маркетологам и владельцам каналов автоматизировать продвижение в Telegram.
-        </p>
-        <p style="margin-top:12px;">
-            За 2025 год мы помогли более <strong>500+ клиентам</strong> привлечь более <strong>1 млн подписчиков</strong>.
-            Наш сервис используют в 50 странах мира.
-        </p>
+        <p>Мы — команда профессионалов, создавшая <strong>Telegrams GPT</strong> — первый ИИ-комбайн для Telegram.</p>
         <div class="stats">
             <div class="stat-item"><div class="num">500+</div><div class="label">Клиентов</div></div>
             <div class="stat-item"><div class="num">1M+</div><div class="label">Подписчиков</div></div>
@@ -455,15 +1196,139 @@
 
     <footer>
         <div class="logo">Telegrams<span style="-webkit-text-fill-color:#E8EDF5;"> GPT</span></div>
-        <p>Профессиональный комбайн для работы с Telegram</p>
         <p style="margin-top:8px;font-size:12px">© 2026 Telegrams GPT · Все права защищены</p>
-        <div class="company-info">
-            ООО "Телеграмс ГПТ" · ИНН 7842157391 · ОГРН 1237804567890
-        </div>
+        <div class="company-info">ООО "Телеграмс ГПТ" · ИНН 7842157391 · ОГРН 1237804567890</div>
     </footer>
 </div>
 
-<!-- МОДАЛКА -->
+<!-- ПАНЕЛЬ УПРАВЛЕНИЯ -->
+<div id="panelContainer" style="display:none;">
+    <nav style="position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;justify-content:space-between;padding:0 20px;height:64px;background:rgba(8,12,20,0.7);backdrop-filter:blur(20px);border-bottom:1px solid rgba(30,45,69,0.3);">
+        <div style="display:flex;align-items:center;gap:12px;">
+            <button class="burger-btn" onclick="toggleSidebar()" style="font-size:28px;background:none;border:none;color:#E8EDF5;cursor:pointer;">☰</button>
+            <div class="logo" style="font-size:18px;">Telegrams<span> GPT</span></div>
+        </div>
+        <div style="display:flex;align-items:center;gap:12px;">
+            <button class="profile-btn" onclick="openProfileModal()">👤 <span id="profileName">Пользователь</span></button>
+            <button class="nav-btn" style="padding:6px 16px;font-size:12px;" onclick="logout()">Выйти</button>
+        </div>
+    </nav>
+
+    <!-- Сайдбар (бургер-меню) -->
+    <div class="sidebar-panel" id="sidebarPanel">
+        <div class="menu-label">Главная</div>
+        <button class="menu-item active" onclick="switchPage('accounts',this)"><span class="icon">📊</span> Менеджер аккаунтов</button>
+        <button class="menu-item" onclick="switchPage('stats',this)"><span class="icon">📈</span> Статистика</button>
+
+        <div class="menu-label">Модули 🔒</div>
+        <button class="menu-item locked" onclick="showLocked('Нейрокомментинг')"><span class="icon">🧠</span> Нейрокомментинг</button>
+        <button class="menu-item locked" onclick="showLocked('Масс Реакции')"><span class="icon">🔥</span> Масс Реакции</button>
+        <button class="menu-item" onclick="switchPage('warmup',this)"><span class="icon">⚡</span> Прогрев</button>
+        <button class="menu-item locked" onclick="showLocked('Парсинг')"><span class="icon">📡</span> Парсинг</button>
+        <button class="menu-item locked" onclick="showLocked('НейроДиалоги')"><span class="icon">💬</span> НейроДиалоги</button>
+        <button class="menu-item locked" onclick="showLocked('Воронки')"><span class="icon">🎯</span> Воронки</button>
+        <button class="menu-item locked" onclick="showLocked('Планировщик')"><span class="icon">📅</span> Планировщик</button>
+        <button class="menu-item locked" onclick="showLocked('Рассылка')"><span class="icon">📨</span> Рассылка</button>
+
+        <div class="menu-label">Настройки</div>
+        <button class="menu-item locked" onclick="showLocked('Прокси')"><span class="icon">🌐</span> Прокси</button>
+        <button class="menu-item locked" onclick="showLocked('Авто-ответы')"><span class="icon">🤖</span> Авто-ответы</button>
+        <button class="menu-item" onclick="switchPage('payment',this)"><span class="icon">💳</span> Оплата</button>
+    </div>
+
+    <div class="panel-main" id="panelMain">
+        <!-- МЕНЕДЖЕР АККАУНТОВ -->
+        <div id="pageAccounts">
+            <div class="panel-topbar">
+                <h1>📊 Менеджер аккаунтов</h1>
+                <div style="display:flex;gap:10px;flex-wrap:wrap;margin-left:auto;">
+                    <button class="btn-sm green" onclick="showToast('➕ Добавление аккаунта')">➕ Добавить</button>
+                    <button class="btn-sm outline" onclick="loadAccounts()">🔄 Обновить</button>
+                </div>
+            </div>
+            <div class="stats-grid-panel">
+                <div class="stat-card-panel"><div class="num" id="statActive">0</div><div class="label">Активные</div></div>
+                <div class="stat-card-panel"><div class="num green" id="statWorking">0</div><div class="label">В работе</div></div>
+                <div class="stat-card-panel"><div class="num yellow" id="statQuarantine">0</div><div class="label">На карантине</div></div>
+                <div class="stat-card-panel"><div class="num red" id="statSpam">0</div><div class="label">Спам-блок</div></div>
+                <div class="stat-card-panel"><div class="num" id="statFrozen" style="color:#8A8A9E;">0</div><div class="label">Замороженные</div></div>
+            </div>
+            <div class="table-wrap-panel">
+                <div class="table-header-panel"><h3>📋 Мои аккаунты</h3></div>
+                <table>
+                    <thead><tr><th>Имя</th><th>Телефон</th><th>Роль</th><th>Статус</th></tr></thead>
+                    <tbody id="accountsBody"><tr><td colspan="4" style="text-align:center;color:#5B7296;padding:20px;">Загружаем...</td></tr></tbody>
+                </table>
+            </div>
+        </div>
+
+        <!-- СТАТИСТИКА -->
+        <div id="pageStats" style="display:none;">
+            <div class="panel-topbar"><h1>📈 Статистика</h1></div>
+            <div class="stats-grid-panel">
+                <div class="stat-card-panel"><div class="num" id="statTotal">0</div><div class="label">Всего</div></div>
+                <div class="stat-card-panel"><div class="num green" id="statAiGen">10</div><div class="label">AI генераций</div></div>
+                <div class="stat-card-panel"><div class="num yellow" id="statBalance">0 ₽</div><div class="label">Баланс</div></div>
+                <div class="stat-card-panel"><div class="num" id="statSub" style="color:#2B7FFF;">🆓 Бесплатный</div><div class="label">Подписка</div></div>
+            </div>
+        </div>
+
+        <!-- ПРОГРЕВ -->
+        <div id="pageWarmup" style="display:none;">
+            <div class="panel-topbar"><h1>⚡ Прогрев</h1></div>
+            <div class="table-wrap-panel" style="padding:20px;">
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;">
+                    <div class="stat-card-panel" onclick="startWarmup(1)" style="cursor:pointer;border-left:4px solid #00D97E;">
+                        <div style="font-weight:700;">🟢 Мягкий</div>
+                        <div style="font-size:12px;color:#5B7296;">Бесплатно</div>
+                    </div>
+                    <div class="stat-card-panel" onclick="startWarmup(2)" style="cursor:pointer;border-left:4px solid #FFB800;">
+                        <div style="font-weight:700;">🟡 Средний</div>
+                        <div style="font-size:12px;color:#5B7296;">🔒 Требуется подписка</div>
+                    </div>
+                    <div class="stat-card-panel" onclick="startWarmup(3)" style="cursor:pointer;border-left:4px solid #FF4D6A;">
+                        <div style="font-weight:700;">🔴 Интенсивный</div>
+                        <div style="font-size:12px;color:#5B7296;">🔒 Требуется подписка</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ОПЛАТА -->
+        <div id="pagePayment" style="display:none;">
+            <div class="panel-topbar"><h1>💳 Оплата</h1></div>
+            <div class="table-wrap-panel" style="padding:20px;">
+                <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:16px;">
+                    <div class="stat-card-panel" onclick="buyPlan('starter')" style="cursor:pointer;border:1px solid rgba(30,45,69,0.3);">
+                        <div style="font-weight:700;">📦 Старт</div>
+                        <div style="font-size:20px;font-weight:700;color:#2B7FFF;">499 ₽</div>
+                        <div style="font-size:11px;color:#5B7296;">30 дней</div>
+                    </div>
+                    <div class="stat-card-panel" onclick="buyPlan('pro')" style="cursor:pointer;border:1px solid #2B7FFF;background:rgba(43,127,255,0.05);">
+                        <div style="font-weight:700;color:#2B7FFF;">⭐ Про</div>
+                        <div style="font-size:20px;font-weight:700;color:#2B7FFF;">999 ₽</div>
+                        <div style="font-size:11px;color:#5B7296;">30 дней</div>
+                    </div>
+                    <div class="stat-card-panel" onclick="buyPlan('business')" style="cursor:pointer;border:1px solid rgba(30,45,69,0.3);">
+                        <div style="font-weight:700;">💎 Бизнес</div>
+                        <div style="font-size:20px;font-weight:700;color:#FFB800;">3 200 ₽</div>
+                        <div style="font-size:11px;color:#5B7296;">30 дней</div>
+                    </div>
+                </div>
+                <div style="margin-top:12px;padding-top:12px;border-top:1px solid rgba(30,45,69,0.3);">
+                    <div style="font-size:13px;color:#5B7296;margin-bottom:8px;">Пополнить баланс</div>
+                    <div style="display:flex;gap:10px;">
+                        <input id="paymentAmount" placeholder="Сумма" value="100" style="flex:1;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.3);border-radius:8px;padding:8px;color:#E8EDF5;font-family:inherit;">
+                        <button class="btn-sm green" onclick="createPayment()">💳 Оплатить</button>
+                    </div>
+                    <div id="paymentResult" style="margin-top:10px;"></div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- МОДАЛКА ВХОДА -->
 <div class="modal-overlay" id="modalOverlay" onclick="closeModalOutside(event)">
     <div class="modal" onclick="event.stopPropagation();">
         <button class="modal-close" onclick="closeModal()">×</button>
@@ -492,11 +1357,24 @@
     </div>
 </div>
 
+<!-- МОДАЛКА ПРОФИЛЯ -->
+<div class="modal-overlay" id="profileModalOverlay" onclick="closeProfileModalOutside(event)">
+    <div class="modal" onclick="event.stopPropagation();">
+        <button class="modal-close" onclick="closeProfileModal()">×</button>
+        <h2>👤 Мой профиль</h2>
+        <p class="modal-sub">Изменить данные</p>
+        <div class="form-group"><label>Имя</label><input type="text" id="profileNameInput" placeholder="Имя"></div>
+        <div class="form-group"><label>Email</label><input type="email" id="profileEmailInput" placeholder="Email"></div>
+        <button class="modal-btn" onclick="updateProfile()">💾 Сохранить</button>
+        <div id="profileResult" style="margin-top:10px;"></div>
+    </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
 // =============================================
-// ===== КОСМИЧЕСКИЙ ФОН (ЗВЁЗДЫ) =====
+// ===== КОСМИЧЕСКИЙ ФОН =====
 // =============================================
 (function() {
     const canvas = document.getElementById('stars-canvas');
@@ -513,14 +1391,14 @@
 
     function createStars() {
         stars = [];
-        const count = Math.floor((width * height) / 800);
+        const count = Math.floor((width * height) / 600);
         for (let i = 0; i < count; i++) {
             stars.push({
                 x: Math.random() * width,
                 y: Math.random() * height,
-                radius: Math.random() * 2 + 0.2,
+                radius: Math.random() * 2.5 + 0.2,
                 opacity: Math.random() * 0.9 + 0.1,
-                speed: Math.random() * 0.02 + 0.005,
+                speed: Math.random() * 0.03 + 0.005,
                 angle: Math.random() * Math.PI * 2
             });
         }
@@ -537,10 +1415,9 @@
             ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
             ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
             ctx.fill();
-            
-            if (s.radius > 1.2) {
-                ctx.shadowColor = `rgba(255, 255, 255, ${alpha * 0.3})`;
-                ctx.shadowBlur = 10;
+            if (s.radius > 1.5) {
+                ctx.shadowColor = `rgba(255, 255, 255, ${alpha * 0.2})`;
+                ctx.shadowBlur = 12;
                 ctx.fill();
                 ctx.shadowBlur = 0;
             }
@@ -549,26 +1426,26 @@
     }
     drawStars();
 
-    // Падающие звёзды
     function createShootingStar() {
         const el = document.createElement('div');
         el.className = 'shooting-star';
         el.style.left = Math.random() * 70 + '%';
         el.style.top = Math.random() * 50 + '%';
         el.style.animationDuration = (Math.random() * 2 + 1) + 's';
-        el.style.animationDelay = (Math.random() * 5) + 's';
+        el.style.animationDelay = (Math.random() * 4) + 's';
         document.body.appendChild(el);
-        setTimeout(() => el.remove(), 8000);
+        setTimeout(() => el.remove(), 7000);
     }
-    setInterval(createShootingStar, 5000);
+    setInterval(createShootingStar, 4000);
     setTimeout(createShootingStar, 1000);
 })();
 
 // =============================================
-// ===== АВТОРИЗАЦИЯ =====
+// ===== ОСНОВНАЯ ЛОГИКА =====
 // =============================================
 
 const API_URL = `http://${window.location.hostname}:8000`;
+let currentUser = null;
 
 function showToast(msg, color='#00D97E') {
     const t = document.getElementById('toast');
@@ -587,31 +1464,34 @@ async function apiCall(endpoint, data = {}) {
         });
         return await response.json();
     } catch (error) {
-        showToast('⚠️ Ошибка соединения с сервером', '#FF4D6A');
+        showToast('⚠️ Ошибка соединения', '#FF4D6A');
         return { success: false };
     }
 }
 
-function openModal() {
-    document.getElementById('modalOverlay').classList.add('open');
+async function apiGet(endpoint) {
+    try {
+        const response = await fetch(`${API_URL}${endpoint}`);
+        return await response.json();
+    } catch (error) {
+        showToast('⚠️ Ошибка соединения', '#FF4D6A');
+        return { success: false };
+    }
 }
 
-function closeModal() {
-    document.getElementById('modalOverlay').classList.remove('open');
-}
+// =============================================
+// ===== АВТОРИЗАЦИЯ =====
+// =============================================
 
-function closeModalOutside(e) {
-    if (e.target === document.getElementById('modalOverlay')) closeModal();
-}
+function openModal() { document.getElementById('modalOverlay').classList.add('open'); }
+function closeModal() { document.getElementById('modalOverlay').classList.remove('open'); }
+function closeModalOutside(e) { if (e.target === document.getElementById('modalOverlay')) closeModal(); }
 
 function switchAuthTab(tab, el) {
     document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
     el.classList.add('active');
     document.getElementById('loginForm').style.display = tab === 'login' ? 'block' : 'none';
     document.getElementById('registerForm').style.display = tab === 'register' ? 'block' : 'none';
-    document.getElementById('loginError').classList.remove('show');
-    document.getElementById('regError').classList.remove('show');
-    document.getElementById('regSuccess').classList.remove('show');
 }
 
 async function register() {
@@ -663,12 +1543,225 @@ async function login() {
     
     const response = await apiCall('/api/login', { email, password });
     if (response.success) {
+        currentUser = response.user;
         closeModal();
-        showToast('✅ Добро пожаловать, ' + response.user.name + '!');
-        window.location.href = '/panel';
+        showToast('✅ Добро пожаловать, ' + currentUser.name + '!');
+        document.getElementById('profileName').textContent = currentUser.name;
+        document.getElementById('landingPage').style.display = 'none';
+        document.getElementById('panelContainer').style.display = 'block';
+        loadAllData();
     } else {
         error.textContent = '❌ ' + (response.error || 'Неверный email или пароль');
         error.classList.add('show');
+    }
+}
+
+function logout() {
+    currentUser = null;
+    document.getElementById('landingPage').style.display = 'block';
+    document.getElementById('panelContainer').style.display = 'none';
+    showToast('👋 Вы вышли');
+}
+
+function toggleSidebar() {
+    document.getElementById('sidebarPanel').classList.toggle('open');
+}
+
+function switchPage(page, el) {
+    document.querySelectorAll('.sidebar-panel .menu-item').forEach(m => m.classList.remove('active'));
+    if (el) el.classList.add('active');
+    document.getElementById('sidebarPanel').classList.remove('open');
+    const pages = ['accounts', 'stats', 'warmup', 'payment'];
+    pages.forEach(p => {
+        const el = document.getElementById('page' + p.charAt(0).toUpperCase() + p.slice(1));
+        if (el) el.style.display = p === page ? 'block' : 'none';
+    });
+    if (page === 'stats') loadStats();
+}
+
+function showLocked(name) {
+    showToast(`🔒 "${name}" доступен только с подпиской Про или Бизнес`, '#FFB800');
+}
+
+// =============================================
+// ===== ПРОФИЛЬ =====
+// =============================================
+
+function openProfileModal() {
+    if (!currentUser) return;
+    document.getElementById('profileNameInput').value = currentUser.name || '';
+    document.getElementById('profileEmailInput').value = currentUser.email || '';
+    document.getElementById('profileModalOverlay').classList.add('open');
+}
+
+function closeProfileModal() {
+    document.getElementById('profileModalOverlay').classList.remove('open');
+}
+
+function closeProfileModalOutside(e) {
+    if (e.target === document.getElementById('profileModalOverlay')) closeProfileModal();
+}
+
+async function updateProfile() {
+    const name = document.getElementById('profileNameInput').value.trim();
+    const email = document.getElementById('profileEmailInput').value.trim();
+    if (!name || !email) { showToast('⚠️ Заполните поля', '#FFB800'); return; }
+    
+    const response = await apiCall('/api/update_profile', {
+        user_id: currentUser.id,
+        name: name,
+        email: email
+    });
+    if (response.success) {
+        currentUser.name = name;
+        currentUser.email = email;
+        document.getElementById('profileName').textContent = name;
+        showToast('✅ Профиль обновлен');
+        closeProfileModal();
+    } else {
+        showToast('❌ ' + (response.error || 'Ошибка'), '#FF4D6A');
+    }
+}
+
+// =============================================
+// ===== ДАННЫЕ =====
+// =============================================
+
+function loadAllData() {
+    loadAccounts();
+    loadStats();
+}
+
+async function loadAccounts() {
+    if (!currentUser) return;
+    const response = await apiGet(`/api/accounts?user_id=${currentUser.id}`);
+    if (response.success && response.accounts) {
+        const tbody = document.getElementById('accountsBody');
+        const accounts = response.accounts || [];
+        if (accounts.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="4" style="text-align:center;color:#5B7296;padding:20px;">Нет аккаунтов</td></tr>';
+            return;
+        }
+        let html = '';
+        accounts.forEach(a => {
+            const statusClass = a.status === 'Активный' ? 'status-active' : 
+                               a.status === 'В работе' ? 'status-working' :
+                               a.status === 'На карантине' ? 'status-quarantine' :
+                               a.status === 'Спам-блок' ? 'status-spam' : 'status-frozen';
+            html += `<tr>
+                <td><strong>${a.name || a.phone}</strong><br><span style="font-size:12px;color:#5B7296;">${a.username || ''}</span></td>
+                <td>${a.phone}</td>
+                <td>${a.role || 'Писатель'}</td>
+                <td><span class="status-badge ${statusClass}">${a.status || 'Активный'}</span></td>
+            </tr>`;
+        });
+        tbody.innerHTML = html;
+    }
+}
+
+async function loadStats() {
+    if (!currentUser) return;
+    const response = await apiGet(`/api/stats?user_id=${currentUser.id}`);
+    if (response.success) {
+        const s = response.stats;
+        document.getElementById('statTotal').textContent = Object.values(s).reduce((a,b) => a + (typeof b === 'number' ? b : 0), 0);
+        document.getElementById('statAiGen').textContent = s.ai_generations || 0;
+        document.getElementById('statBalance').textContent = (s.balance || 0) + ' ₽';
+        const subNames = { 'free': '🆓 Бесплатный', 'starter': '📦 Старт', 'pro': '⭐ Про', 'business': '💎 Бизнес' };
+        document.getElementById('statSub').textContent = subNames[s.subscription] || '🆓 Бесплатный';
+    }
+}
+
+async function startWarmup(level) {
+    if (!currentUser) { showToast('⚠️ Войдите в аккаунт', '#FFB800'); return; }
+    if (level > 1) {
+        const check = await apiCall('/api/check_service_access', { user_id: currentUser.id, service: 'warmup_mid' });
+        if (!check.access) {
+            showToast('🔒 ' + check.message, '#FFB800');
+            return;
+        }
+    }
+    
+    const accounts = await apiGet(`/api/accounts?user_id=${currentUser.id}`);
+    if (!accounts.success || !accounts.accounts || accounts.accounts.length === 0) {
+        showToast('⚠️ Сначала добавьте аккаунт', '#FFB800');
+        return;
+    }
+    const account_id = accounts.accounts[0].id;
+    
+    const response = await apiCall('/api/warmup/start', {
+        user_id: currentUser.id,
+        account_id: account_id,
+        level: level
+    });
+    if (response.success) {
+        showToast('✅ ' + response.message);
+        loadAccounts();
+    } else {
+        showToast('❌ ' + (response.error || 'Ошибка'), '#FF4D6A');
+    }
+}
+
+// =============================================
+// ===== ОПЛАТА =====
+// =============================================
+
+async function buyPlan(plan) {
+    if (!currentUser) { showToast('⚠️ Войдите в аккаунт', '#FFB800'); return; }
+    const plans = { 'starter': 499, 'pro': 999, 'business': 3200 };
+    if (confirm(`Оформить подписку "${plan}" за ${plans[plan]} ₽?`)) {
+        const response = await apiCall('/api/subscribe', {
+            user_id: currentUser.id,
+            plan: plan
+        });
+        if (response.success) {
+            showToast('✅ ' + response.message);
+            loadStats();
+        } else {
+            showToast('❌ ' + (response.error || 'Ошибка'), '#FF4D6A');
+        }
+    }
+}
+
+async function createPayment() {
+    if (!currentUser) { showToast('⚠️ Войдите в аккаунт', '#FFB800'); return; }
+    const amount = parseFloat(document.getElementById('paymentAmount').value);
+    if (!amount || amount < 1) { showToast('⚠️ Введите сумму', '#FFB800'); return; }
+    
+    const result = document.getElementById('paymentResult');
+    result.innerHTML = '<div style="color:#5B7296;">⏳ Создание платежа...</div>';
+    
+    const response = await apiCall('/api/create_payment', {
+        user_id: currentUser.id,
+        amount: amount,
+        service: 'Пополнение баланса Telegrams GPT'
+    });
+    
+    if (response.success) {
+        const url = response.payment_url + '?' + new URLSearchParams(response.params).toString();
+        result.innerHTML = `
+            <div style="color:#00D97E;font-weight:600;">✅ Платеж создан!</div>
+            <div style="margin-top:8px;font-size:13px;color:#5B7296;">Сумма: ${amount} ₽</div>
+            <div style="margin-top:8px;">
+                <a href="${url}" target="_blank" style="background:#2B7FFF;color:#fff;padding:10px 20px;border-radius:8px;text-decoration:none;display:inline-block;">💳 Оплатить</a>
+            </div>
+            <div style="margin-top:8px;font-size:12px;color:#5B7296;">Заказ: ${response.order_id}</div>
+            <button class="btn-sm outline" onclick="checkPayment('${response.order_id}')" style="margin-top:8px;">🔄 Проверить оплату</button>
+        `;
+        showToast('✅ Ссылка на оплату создана');
+    } else {
+        result.innerHTML = `<div style="color:#FF4D6A;">❌ ${response.error || 'Ошибка'}</div>`;
+        showToast('❌ Ошибка создания платежа', '#FF4D6A');
+    }
+}
+
+async function checkPayment(orderId) {
+    const response = await apiGet(`/api/order_status/${orderId}`);
+    if (response.success && response.status === 'paid') {
+        showToast('✅ Оплата подтверждена! Баланс пополнен');
+        loadStats();
+    } else {
+        showToast('⏳ Оплата еще не подтверждена', '#FFB800');
     }
 }
 
@@ -678,11 +1771,10 @@ async function login() {
 
 async function loadReviews() {
     try {
-        const response = await fetch(`${API_URL}/api/reviews`);
-        const data = await response.json();
-        if (data.success && data.reviews) {
+        const response = await apiGet('/api/reviews');
+        if (response.success && response.reviews) {
             const container = document.getElementById('reviewsGrid');
-            container.innerHTML = data.reviews.map(r => 
+            container.innerHTML = response.reviews.map(r => 
                 `<div class="review-card">
                     <div class="header">
                         <span class="name">${r.name}</span>
@@ -693,10 +1785,12 @@ async function loadReviews() {
                 </div>`
             ).join('');
         }
-    } catch(e) {
-        console.log('Ошибка загрузки отзывов');
-    }
+    } catch(e) { console.log('Ошибка загрузки отзывов'); }
 }
+
+// =============================================
+// ===== ЗАПУСК =====
+// =============================================
 
 document.addEventListener('DOMContentLoaded', function() {
     loadReviews();
@@ -705,12 +1799,36 @@ document.addEventListener('DOMContentLoaded', function() {
 
 window.register = register;
 window.login = login;
+window.logout = logout;
 window.openModal = openModal;
 window.closeModal = closeModal;
 window.closeModalOutside = closeModalOutside;
 window.switchAuthTab = switchAuthTab;
-window.showToast = showToast;
+window.switchPage = switchPage;
+window.toggleSidebar = toggleSidebar;
+window.showLocked = showLocked;
+window.startWarmup = startWarmup;
+window.buyPlan = buyPlan;
+window.createPayment = createPayment;
+window.checkPayment = checkPayment;
+window.openProfileModal = openProfileModal;
+window.closeProfileModal = closeProfileModal;
+window.closeProfileModalOutside = closeProfileModalOutside;
+window.updateProfile = updateProfile;
+window.loadAccounts = loadAccounts;
+window.loadStats = loadStats;
 window.loadReviews = loadReviews;
+window.showToast = showToast;
 </script>
 </body>
 </html>
+    """)
+
+if __name__ == "__main__":
+    import uvicorn
+    print("🚀 Telegrams GPT сервер запущен!")
+    print("📱 Открой в браузере: http://localhost:8000")
+    print("🎁 Промокоды: PROMO10_1...PROMO10_10, PROMO15_1...PROMO15_15, PROMO5_1...PROMO5_5")
+    print("💳 Оплата через ЮMoney")
+    print("🌌 Космический фон со звёздами")
+    uvicorn.run(app, host="0.0.0.0", port=8000)
