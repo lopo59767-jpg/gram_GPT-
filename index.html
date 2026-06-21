@@ -27,7 +27,6 @@ def init_db():
     conn = sqlite3.connect('telegrams.db')
     c = conn.cursor()
     
-    # Пользователи
     c.execute('''CREATE TABLE IF NOT EXISTS users (
         id INTEGER PRIMARY KEY,
         email TEXT UNIQUE,
@@ -39,7 +38,6 @@ def init_db():
         balance REAL DEFAULT 0
     )''')
     
-    # Telegram аккаунты
     c.execute('''CREATE TABLE IF NOT EXISTS tg_accounts (
         id INTEGER PRIMARY KEY,
         user_id INTEGER,
@@ -55,7 +53,6 @@ def init_db():
         added_at TIMESTAMP
     )''')
     
-    # Прокси
     c.execute('''CREATE TABLE IF NOT EXISTS proxies (
         id INTEGER PRIMARY KEY,
         user_id INTEGER,
@@ -67,7 +64,6 @@ def init_db():
         created_at TIMESTAMP
     )''')
     
-    # Посты
     c.execute('''CREATE TABLE IF NOT EXISTS posts (
         id INTEGER PRIMARY KEY,
         user_id INTEGER,
@@ -78,7 +74,6 @@ def init_db():
         created_at TIMESTAMP
     )''')
     
-    # Комментарии
     c.execute('''CREATE TABLE IF NOT EXISTS comments (
         id INTEGER PRIMARY KEY,
         user_id INTEGER,
@@ -89,7 +84,6 @@ def init_db():
         created_at TIMESTAMP
     )''')
     
-    # Реакции
     c.execute('''CREATE TABLE IF NOT EXISTS reactions (
         id INTEGER PRIMARY KEY,
         user_id INTEGER,
@@ -99,7 +93,6 @@ def init_db():
         created_at TIMESTAMP
     )''')
     
-    # Диалоги
     c.execute('''CREATE TABLE IF NOT EXISTS dialogs (
         id INTEGER PRIMARY KEY,
         user_id INTEGER,
@@ -111,7 +104,6 @@ def init_db():
         created_at TIMESTAMP
     )''')
     
-    # Воронки
     c.execute('''CREATE TABLE IF NOT EXISTS funnels (
         id INTEGER PRIMARY KEY,
         user_id INTEGER,
@@ -121,7 +113,6 @@ def init_db():
         created_at TIMESTAMP
     )''')
     
-    # Авто-ответы
     c.execute('''CREATE TABLE IF NOT EXISTS auto_replies (
         id INTEGER PRIMARY KEY,
         user_id INTEGER,
@@ -131,7 +122,6 @@ def init_db():
         created_at TIMESTAMP
     )''')
     
-    # Покупки услуг
     c.execute('''CREATE TABLE IF NOT EXISTS purchases (
         id INTEGER PRIMARY KEY,
         user_id INTEGER,
@@ -141,7 +131,6 @@ def init_db():
         expires_at TIMESTAMP
     )''')
     
-    # Промокоды
     c.execute('''CREATE TABLE IF NOT EXISTS promo_codes (
         id INTEGER PRIMARY KEY,
         code TEXT UNIQUE,
@@ -151,7 +140,6 @@ def init_db():
         created_at TIMESTAMP
     )''')
     
-    # Заказы (для оплаты)
     c.execute('''CREATE TABLE IF NOT EXISTS orders (
         id INTEGER PRIMARY KEY,
         order_id TEXT UNIQUE,
@@ -163,7 +151,6 @@ def init_db():
         paid_at TIMESTAMP
     )''')
     
-    # Статистика
     c.execute('''CREATE TABLE IF NOT EXISTS stats (
         id INTEGER PRIMARY KEY,
         user_id INTEGER,
@@ -172,7 +159,6 @@ def init_db():
         date TEXT
     )''')
     
-    # Отзывы
     c.execute('''CREATE TABLE IF NOT EXISTS reviews (
         id INTEGER PRIMARY KEY,
         name TEXT,
@@ -183,7 +169,7 @@ def init_db():
     
     conn.commit()
     
-    # Добавляем тестовые аккаунты
+    # Тестовые аккаунты
     c.execute("SELECT COUNT(*) FROM tg_accounts")
     if c.fetchone()[0] == 0:
         test_accounts = [
@@ -198,7 +184,7 @@ def init_db():
                          VALUES (1, ?, ?, ?, ?, ?, ?)""",
                       (acc[0], acc[1], acc[2], acc[3], acc[4], datetime.now()))
     
-    # Генерируем промокоды
+    # Промокоды
     c.execute("SELECT COUNT(*) FROM promo_codes")
     if c.fetchone()[0] == 0:
         promo_data = [
@@ -210,7 +196,7 @@ def init_db():
             c.execute("INSERT INTO promo_codes (code, discount_amount, min_order, created_at) VALUES (?, ?, ?, ?)",
                       (p["code"], p["discount"], p["min_order"], datetime.now()))
     
-    # Добавляем отзывы (200+)
+    # Отзывы (200+)
     c.execute("SELECT COUNT(*) FROM reviews")
     if c.fetchone()[0] == 0:
         names = [
@@ -893,7 +879,10 @@ async def get_reviews():
     conn.close()
     return {"success": True, "reviews": reviews}
 
-# ===== ОПЛАТА (ЮMoney) =====
+# =============================================
+# ===== ОПЛАТА =====
+# =============================================
+
 @app.post("/api/create_payment")
 async def create_payment(data: dict):
     user_id = data.get('user_id')
@@ -973,21 +962,21 @@ async def root():
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Telegrams GPT — Космический комбайн</title>
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@300;400;500;600;700&family=Space+Mono:wght@400;700&display=swap');
 
         * { margin:0; padding:0; box-sizing:border-box; }
         body { 
-            background: #080C14; 
+            background: #05080f; 
             color: #E8EDF5; 
             font-family:'Space Grotesk',sans-serif; 
             overflow-x:hidden; 
             min-height:100vh;
         }
 
-        /* ===== КОСМИЧЕСКИЙ ФОН ===== */
+        /* КОСМИЧЕСКИЙ ФОН */
         #stars-canvas {
             position: fixed;
             top: 0;
@@ -1002,46 +991,53 @@ async def root():
             position: fixed;
             border-radius: 50%;
             filter: blur(120px);
-            opacity: 0.3;
+            opacity: 0.25;
             z-index: 0;
             pointer-events: none;
-            animation: nebulaFloat 20s ease-in-out infinite alternate;
+            animation: nebulaFloat 25s ease-in-out infinite alternate;
         }
         .nebula-1 {
-            width: 600px;
-            height: 600px;
-            background: rgba(91, 142, 240, 0.15);
+            width: 700px;
+            height: 700px;
+            background: rgba(91, 142, 240, 0.12);
             top: -200px;
             right: -200px;
             animation-delay: 0s;
         }
         .nebula-2 {
-            width: 500px;
-            height: 500px;
-            background: rgba(139, 108, 245, 0.12);
+            width: 600px;
+            height: 600px;
+            background: rgba(139, 108, 245, 0.1);
             bottom: -150px;
             left: -150px;
-            animation-delay: -7s;
+            animation-delay: -8s;
         }
         .nebula-3 {
+            width: 500px;
+            height: 500px;
+            background: rgba(32, 212, 200, 0.06);
+            top: 40%;
+            left: 60%;
+            animation-delay: -16s;
+        }
+        .nebula-4 {
             width: 400px;
             height: 400px;
-            background: rgba(32, 212, 200, 0.08);
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
-            animation-delay: -14s;
+            background: rgba(255, 184, 0, 0.04);
+            top: 60%;
+            left: 20%;
+            animation-delay: -12s;
         }
         @keyframes nebulaFloat {
             0% { transform: translate(0, 0) scale(1); }
-            100% { transform: translate(40px, 30px) scale(1.2); }
+            100% { transform: translate(50px, 40px) scale(1.15); }
         }
 
         .shooting-star {
             position: fixed;
             width: 2px;
             height: 2px;
-            background: #fff;
+            background: linear-gradient(90deg, #fff, transparent);
             border-radius: 50%;
             z-index: 1;
             animation: shoot linear infinite;
@@ -1050,22 +1046,22 @@ async def root():
         @keyframes shoot {
             0% { transform: translate(0, 0) scale(1); opacity: 1; }
             70% { opacity: 1; }
-            100% { transform: translate(300px, 300px) scale(0); opacity: 0; }
+            100% { transform: translate(400px, 400px) scale(0); opacity: 0; }
         }
 
-        /* ===== ОСНОВНОЙ КОНТЕНТ ===== */
         .content {
             position: relative;
             z-index: 10;
         }
 
+        /* НАВИГАЦИЯ */
         nav {
             position:fixed; top:0; left:0; right:0; z-index:100;
             display:flex; align-items:center; justify-content:space-between;
             padding:0 40px; height:64px;
-            background:rgba(8,12,20,0.7);
+            background:rgba(5,8,15,0.6);
             backdrop-filter:blur(20px);
-            border-bottom:1px solid rgba(30,45,69,0.3);
+            border-bottom:1px solid rgba(30,45,69,0.2);
         }
         .logo { 
             font-family:'Space Mono',monospace; font-size:18px; font-weight:700;
@@ -1092,6 +1088,7 @@ async def root():
         .nav-user .logout { color: #5B7296; cursor: pointer; font-size: 13px; }
         .nav-user .logout:hover { color: #FF4D6A; }
 
+        /* ГЕРОЙ */
         .hero {
             min-height:100vh; display:flex; flex-direction:column; align-items:center; justify-content:center;
             text-align:center; padding:120px 40px 60px; position:relative; overflow:hidden;
@@ -1100,11 +1097,11 @@ async def root():
             content: '';
             position: absolute;
             inset: 0;
-            background: radial-gradient(ellipse at center, rgba(43,127,255,0.05) 0%, transparent 70%);
+            background: radial-gradient(ellipse at center, rgba(43,127,255,0.04) 0%, transparent 70%);
             pointer-events: none;
         }
         .badge { display:inline-flex; align-items:center; gap:8px;
-            background:rgba(43,127,255,0.1); border:1px solid rgba(43,127,255,0.3);
+            background:rgba(43,127,255,0.08); border:1px solid rgba(43,127,255,0.2);
             border-radius:20px; padding:6px 16px; font-size:13px; color:#2B7FFF;
             font-family:'Space Mono',monospace; margin-bottom:28px; position:relative; }
         .badge::before { content:'●'; color:#00D97E; animation:pulse 2s infinite; }
@@ -1117,7 +1114,7 @@ async def root():
             border-radius:10px; padding:14px 32px; font-size:16px; font-weight:600; cursor:pointer; transition:.2s;
             font-family:inherit; box-shadow:0 0 30px rgba(43,127,255,0.35); }
         .btn-primary:hover { transform:translateY(-2px); box-shadow:0 0 45px rgba(43,127,255,0.5); }
-        .btn-secondary { background:transparent; color:#E8EDF5; border:1px solid rgba(30,45,69,0.5); border-radius:10px;
+        .btn-secondary { background:transparent; color:#E8EDF5; border:1px solid rgba(30,45,69,0.4); border-radius:10px;
             padding:14px 32px; font-size:16px; font-weight:500; cursor:pointer; transition:.2s; font-family:inherit; }
         .btn-secondary:hover { border-color:#2B7FFF; color:#2B7FFF; }
         .hero-stats { display:flex; gap:40px; margin-top:60px; position:relative; flex-wrap:wrap; justify-content:center; }
@@ -1125,6 +1122,7 @@ async def root():
         .stat-num { font-family:'Space Mono',monospace; font-size:28px; font-weight:700; color:#2B7FFF; }
         .stat-label { font-size:13px; color:#5B7296; margin-top:4px; }
 
+        /* СЕКЦИИ */
         section { padding:80px 40px; max-width:1200px; margin:0 auto; position:relative; }
         .section-label { font-family:'Space Mono',monospace; font-size:12px; color:#2B7FFF;
             letter-spacing:3px; text-transform:uppercase; margin-bottom:12px; }
@@ -1132,20 +1130,20 @@ async def root():
         .section-sub { color:#5B7296; font-size:16px; max-width:520px; line-height:1.6; margin-bottom:48px; }
 
         .tools-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:20px; }
-        .tool-card { background:rgba(19,29,46,0.6); backdrop-filter:blur(10px); border:1px solid rgba(30,45,69,0.3); border-radius:16px; padding:28px;
+        .tool-card { background:rgba(19,29,46,0.5); backdrop-filter:blur(10px); border:1px solid rgba(30,45,69,0.2); border-radius:16px; padding:28px;
             transition:.3s; cursor:pointer; position:relative; overflow:hidden; }
-        .tool-card::before { content:''; position:absolute; inset:0; background:linear-gradient(135deg,rgba(43,127,255,0.05),transparent); opacity:0; transition:.3s; }
+        .tool-card::before { content:''; position:absolute; inset:0; background:linear-gradient(135deg,rgba(43,127,255,0.04),transparent); opacity:0; transition:.3s; }
         .tool-card:hover { border-color:#2B7FFF; transform:translateY(-3px); box-shadow:0 0 40px rgba(43,127,255,0.05); }
         .tool-card:hover::before { opacity:1; }
         .tool-icon { width:48px; height:48px; border-radius:12px; display:flex; align-items:center; justify-content:center; font-size:22px; margin-bottom:16px; }
         .tool-card h3 { font-size:17px; font-weight:600; margin-bottom:8px; }
         .tool-card p { font-size:14px; color:#5B7296; line-height:1.6; }
-        .tool-tag { display:inline-block; margin-top:14px; background:rgba(43,127,255,0.12); color:#2B7FFF;
+        .tool-tag { display:inline-block; margin-top:14px; background:rgba(43,127,255,0.1); color:#2B7FFF;
             border-radius:6px; padding:3px 10px; font-size:12px; font-weight:600; }
 
         .pricing-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(280px,1fr)); gap:20px; }
-        .price-card { background:rgba(19,29,46,0.6); backdrop-filter:blur(10px); border:1px solid rgba(30,45,69,0.3); border-radius:20px; padding:32px; transition:.3s; position:relative; }
-        .price-card.popular { border-color:#2B7FFF; box-shadow:0 0 40px rgba(43,127,255,0.1); }
+        .price-card { background:rgba(19,29,46,0.5); backdrop-filter:blur(10px); border:1px solid rgba(30,45,69,0.2); border-radius:20px; padding:32px; transition:.3s; position:relative; }
+        .price-card.popular { border-color:#2B7FFF; box-shadow:0 0 40px rgba(43,127,255,0.06); }
         .popular-tag { position:absolute; top:-12px; left:50%; transform:translateX(-50%);
             background:linear-gradient(135deg,#2B7FFF,#7B3FFF); color:#fff; padding:4px 16px; border-radius:20px; font-size:12px; font-weight:700; white-space:nowrap; }
         .price-name { font-size:14px; color:#5B7296; font-weight:500; margin-bottom:12px; }
@@ -1158,20 +1156,21 @@ async def root():
         .price-features li.no { opacity:.4; }
         .price-features li.no::before { content:'✗'; color:#5B7296; }
         .price-btn { width:100%; padding:13px; border-radius:10px; font-size:15px; font-weight:600;
-            cursor:pointer; transition:.2s; font-family:inherit; border:1px solid rgba(30,45,69,0.3); background:transparent; color:#E8EDF5; }
+            cursor:pointer; transition:.2s; font-family:inherit; border:1px solid rgba(30,45,69,0.2); background:transparent; color:#E8EDF5; }
         .price-btn.accent { background:linear-gradient(135deg,#2B7FFF,#7B3FFF); border-color:transparent; color:#fff; }
         .price-btn:hover { opacity:.85; transform:translateY(-1px); }
 
+        /* ОТЗЫВЫ */
         .reviews-section {
             max-width: 1200px; margin: 60px auto 0;
             padding: 40px 20px;
-            border-top: 1px solid rgba(30,45,69,0.3);
+            border-top: 1px solid rgba(30,45,69,0.2);
             width: 100%;
         }
         .reviews-section h2 { text-align: center; font-size: 32px; font-weight: 700; margin-bottom: 8px; }
         .reviews-section .sub { text-align: center; color: #5B7296; margin-bottom: 32px; }
         .reviews-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); gap: 20px; }
-        .review-card { background:rgba(19,29,46,0.6); backdrop-filter:blur(10px); border:1px solid rgba(30,45,69,0.3); border-radius:16px; padding:20px; transition:.3s; }
+        .review-card { background:rgba(19,29,46,0.5); backdrop-filter:blur(10px); border:1px solid rgba(30,45,69,0.2); border-radius:16px; padding:20px; transition:.3s; }
         .review-card:hover { border-color:#2B7FFF; }
         .review-card .header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 8px; }
         .review-card .name { font-weight: 600; }
@@ -1182,18 +1181,18 @@ async def root():
         .about-section {
             max-width: 800px; margin: 60px auto 0;
             padding: 40px 20px;
-            border-top: 1px solid rgba(30,45,69,0.3);
+            border-top: 1px solid rgba(30,45,69,0.2);
             text-align: center;
         }
         .about-section h2 { font-size: 32px; font-weight: 700; margin-bottom: 16px; }
         .about-section p { color: #5B7296; font-size: 16px; line-height: 1.8; }
         .about-section .stats { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 20px; margin-top: 24px; }
-        .about-section .stat-item { background:rgba(19,29,46,0.6); backdrop-filter:blur(10px); border-radius:12px; padding:16px; border:1px solid rgba(30,45,69,0.3); }
+        .about-section .stat-item { background:rgba(19,29,46,0.5); backdrop-filter:blur(10px); border-radius:12px; padding:16px; border:1px solid rgba(30,45,69,0.2); }
         .about-section .stat-item .num { font-size: 28px; font-weight: 700; color: #2B7FFF; }
         .about-section .stat-item .label { font-size: 12px; color: #5B7296; margin-top: 4px; }
 
         footer {
-            border-top: 1px solid rgba(30,45,69,0.3);
+            border-top: 1px solid rgba(30,45,69,0.2);
             padding: 40px;
             text-align: center;
             color: #5B7296;
@@ -1203,6 +1202,7 @@ async def root():
         footer .logo { display:inline-block; margin-bottom:12px; font-size:20px; }
         footer .company-info { font-size:11px; color:#3A4A6A; margin-top:4px; }
 
+        /* МОДАЛКА */
         .modal-overlay {
             position:fixed; inset:0; background:rgba(0,0,0,0.8); backdrop-filter:blur(12px);
             z-index:200; display:flex; align-items:center; justify-content:center;
@@ -1237,48 +1237,49 @@ async def root():
             transform:translateY(100px); opacity:0; transition:.4s; max-width:320px; }
         .toast.show { transform:translateY(0); opacity:1; }
 
+        /* ПАНЕЛЬ */
         .panel-container { display: none; }
         .panel-container.active { display: block; }
         .burger-btn { display: none; background: none; border: none; color: #E8EDF5; font-size: 28px; cursor: pointer; padding: 4px 8px; font-family: inherit; }
         .burger-btn.show { display: block; }
         .sidebar-panel {
             position: fixed; top: 64px; left: -280px; width: 280px; height: calc(100vh - 64px);
-            background: rgba(13,19,33,0.95); backdrop-filter:blur(20px);
-            border-right: 1px solid rgba(30,45,69,0.3);
+            background: rgba(5,8,15,0.95); backdrop-filter:blur(20px);
+            border-right: 1px solid rgba(30,45,69,0.2);
             padding: 20px 16px; overflow-y: auto; z-index: 50;
             transition: left 0.3s ease;
         }
         .sidebar-panel.open { left: 0; }
         .sidebar-panel .menu-label { font-size: 10px; text-transform: uppercase; color: #5B7296; letter-spacing: 1px; margin: 16px 0 8px 12px; font-weight: 600; }
         .sidebar-panel .menu-item { display: flex; align-items: center; gap: 10px; padding: 10px 14px; border-radius: 10px; cursor: pointer; color: #5B7296; transition: 0.2s; font-size: 13px; font-weight: 500; border: none; background: none; width: 100%; text-align: left; font-family: inherit; }
-        .sidebar-panel .menu-item:hover { background: rgba(43,127,255,0.08); color: #E8EDF5; }
-        .sidebar-panel .menu-item.active { background: rgba(43,127,255,0.15); color: #2B7FFF; }
+        .sidebar-panel .menu-item:hover { background: rgba(43,127,255,0.06); color: #E8EDF5; }
+        .sidebar-panel .menu-item.active { background: rgba(43,127,255,0.1); color: #2B7FFF; }
         .sidebar-panel .menu-item .icon { font-size: 18px; width: 24px; }
 
         .panel-main { display: none; padding: 20px 28px; margin-top: 64px; min-height: calc(100vh - 64px); background: transparent; }
         .panel-main.active { display: block; }
-        .panel-topbar { display: flex; align-items: center; gap: 16px; padding-bottom: 16px; border-bottom: 1px solid rgba(30,45,69,0.3); margin-bottom: 20px; flex-wrap: wrap; }
+        .panel-topbar { display: flex; align-items: center; gap: 16px; padding-bottom: 16px; border-bottom: 1px solid rgba(30,45,69,0.2); margin-bottom: 20px; flex-wrap: wrap; }
         .panel-topbar h1 { font-size: 22px; font-weight: 700; }
 
         .stats-grid-panel { display: grid; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); gap: 10px; margin-bottom: 20px; }
-        .stat-card-panel { background:rgba(19,29,46,0.6); backdrop-filter:blur(10px); border:1px solid rgba(30,45,69,0.3); border-radius:12px; padding:14px; text-align:center; }
+        .stat-card-panel { background:rgba(19,29,46,0.5); backdrop-filter:blur(10px); border:1px solid rgba(30,45,69,0.2); border-radius:12px; padding:14px; text-align:center; }
         .stat-card-panel .num { font-size:22px; font-weight:800; color:#2B7FFF; }
         .stat-card-panel .label { font-size:11px; color:#5B7296; margin-top:2px; }
         .stat-card-panel .num.green { color:#00D97E; }
         .stat-card-panel .num.yellow { color:#FFB800; }
         .stat-card-panel .num.red { color:#FF4D6A; }
 
-        .table-wrap-panel { background:rgba(19,29,46,0.6); backdrop-filter:blur(10px); border:1px solid rgba(30,45,69,0.3); border-radius:16px; overflow:hidden; }
-        .table-header-panel { display: flex; justify-content: space-between; align-items: center; padding: 14px 20px; border-bottom: 1px solid rgba(30,45,69,0.3); flex-wrap: wrap; gap: 10px; }
+        .table-wrap-panel { background:rgba(19,29,46,0.5); backdrop-filter:blur(10px); border:1px solid rgba(30,45,69,0.2); border-radius:16px; overflow:hidden; }
+        .table-header-panel { display: flex; justify-content: space-between; align-items: center; padding: 14px 20px; border-bottom: 1px solid rgba(30,45,69,0.2); flex-wrap: wrap; gap: 10px; }
         .table-header-panel h3 { font-size: 15px; font-weight: 600; }
         table { width: 100%; border-collapse: collapse; font-size: 13px; }
-        th { text-align: left; padding: 10px 16px; color: #5B7296; font-weight: 500; font-size: 11px; text-transform: uppercase; border-bottom: 1px solid rgba(30,45,69,0.3); }
-        td { padding: 10px 16px; border-bottom: 1px solid rgba(30,45,69,0.3); }
+        th { text-align: left; padding: 10px 16px; color: #5B7296; font-weight: 500; font-size: 11px; text-transform: uppercase; border-bottom: 1px solid rgba(30,45,69,0.2); }
+        td { padding: 10px 16px; border-bottom: 1px solid rgba(30,45,69,0.2); }
         tr:last-child td { border-bottom: none; }
 
         .btn-sm { padding: 6px 14px; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; border: none; font-family: inherit; background: linear-gradient(135deg,#2B7FFF,#7B3FFF); color: #fff; }
         .btn-sm:hover { opacity: 0.85; }
-        .btn-sm.outline { background: transparent; color: #E8EDF5; border: 1px solid rgba(30,45,69,0.3); }
+        .btn-sm.outline { background: transparent; color: #E8EDF5; border: 1px solid rgba(30,45,69,0.2); }
         .btn-sm.outline:hover { border-color: #2B7FFF; color: #2B7FFF; }
         .btn-sm.green { background: #00D97E; color: #fff; }
         .btn-sm.green:hover { opacity: 0.85; }
@@ -1309,6 +1310,7 @@ async def root():
             .panel-main { padding: 16px; }
             .stats-grid-panel { grid-template-columns: repeat(3, 1fr); }
             .burger-btn.show { display: block; }
+            .modal { max-width: 95%; padding: 24px; }
         }
     </style>
 </head>
@@ -1319,6 +1321,7 @@ async def root():
 <div class="nebula nebula-1"></div>
 <div class="nebula nebula-2"></div>
 <div class="nebula nebula-3"></div>
+<div class="nebula nebula-4"></div>
 
 <div class="content">
     <!-- НАВИГАЦИЯ -->
@@ -1363,7 +1366,7 @@ async def root():
         <h2 class="section-title">Всё что нужно для Telegram</h2>
         <p class="section-sub">Профессиональный набор инструментов для работы с аккаунтами, каналами и аудиторией.</p>
         <div class="tools-grid">
-            <div class="tool-card" onclick="document.getElementById('warmup').scrollIntoView({behavior:'smooth'})">
+            <div class="tool-card">
                 <div class="tool-icon" style="background:rgba(43,127,255,0.12)">🔥</div>
                 <h3>Прогрев аккаунта</h3>
                 <p>Постепенная активность: лайки, просмотры, сообщения — имитация живого пользователя. 3 режима интенсивности.</p>
@@ -1522,7 +1525,7 @@ async def root():
 
 <!-- ПАНЕЛЬ УПРАВЛЕНИЯ -->
 <div class="panel-container" id="panelContainer">
-    <nav style="position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;justify-content:space-between;padding:0 20px;height:64px;background:rgba(8,12,20,0.7);backdrop-filter:blur(20px);border-bottom:1px solid rgba(30,45,69,0.3);">
+    <nav style="position:fixed;top:0;left:0;right:0;z-index:100;display:flex;align-items:center;justify-content:space-between;padding:0 20px;height:64px;background:rgba(5,8,15,0.6);backdrop-filter:blur(20px);border-bottom:1px solid rgba(30,45,69,0.2);">
         <div style="display:flex;align-items:center;gap:12px;">
             <button class="burger-btn show" onclick="toggleSidebar()" style="font-size:28px;background:none;border:none;color:#E8EDF5;cursor:pointer;">☰</button>
             <div class="logo" style="font-size:18px;">Telegrams<span> GPT</span></div>
@@ -1622,8 +1625,8 @@ async def root():
         <div id="pageComment" style="display:none;">
             <div class="panel-topbar"><h1>🧠 Нейрокомментинг</h1></div>
             <div class="table-wrap-panel" style="padding:20px;">
-                <textarea id="commentText" placeholder="Текст комментария..." rows="3" style="width:100%;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.3);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;"></textarea>
-                <input id="commentChannel" placeholder="📢 @канал" style="width:100%;margin-top:8px;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.3);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;">
+                <textarea id="commentText" placeholder="Текст комментария..." rows="3" style="width:100%;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.2);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;"></textarea>
+                <input id="commentChannel" placeholder="📢 @канал" style="width:100%;margin-top:8px;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.2);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;">
                 <button class="btn-sm green" onclick="sendComment()" style="margin-top:10px;">💬 Отправить</button>
                 <div style="margin-top:12px;font-size:13px;color:#5B7296;">💡 Требуется подписка Про или Бизнес</div>
             </div>
@@ -1633,11 +1636,11 @@ async def root():
         <div id="pageReactions" style="display:none;">
             <div class="panel-topbar"><h1>🔥 Масс Реакции</h1></div>
             <div class="table-wrap-panel" style="padding:20px;">
-                <input id="reactionChannel" placeholder="📢 @канал" style="width:100%;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.3);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;">
-                <select id="reactionType" style="width:100%;margin-top:8px;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.3);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;">
+                <input id="reactionChannel" placeholder="📢 @канал" style="width:100%;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.2);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;">
+                <select id="reactionType" style="width:100%;margin-top:8px;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.2);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;">
                     <option>🔥</option><option>❤️</option><option>👍</option><option>🚀</option><option>🎉</option>
                 </select>
-                <input id="reactionCount" placeholder="Количество" value="10" style="width:100%;margin-top:8px;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.3);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;">
+                <input id="reactionCount" placeholder="Количество" value="10" style="width:100%;margin-top:8px;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.2);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;">
                 <button class="btn-sm green" onclick="sendReactions()" style="margin-top:10px;">🔥 Отправить</button>
                 <div style="margin-top:12px;font-size:13px;color:#5B7296;">💡 Требуется подписка Про или Бизнес</div>
             </div>
@@ -1669,8 +1672,8 @@ async def root():
         <div id="pageParse" style="display:none;">
             <div class="panel-topbar"><h1>📡 Парсинг</h1></div>
             <div class="table-wrap-panel" style="padding:20px;">
-                <input id="parseQuery" placeholder="🔍 Ключевое слово или @канал" style="width:100%;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.3);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;">
-                <input id="parseLimit" placeholder="Лимит" value="50" style="width:100%;margin-top:8px;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.3);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;">
+                <input id="parseQuery" placeholder="🔍 Ключевое слово или @канал" style="width:100%;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.2);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;">
+                <input id="parseLimit" placeholder="Лимит" value="50" style="width:100%;margin-top:8px;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.2);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;">
                 <button class="btn-sm green" onclick="runParse()" style="margin-top:10px;">🔍 Начать парсинг</button>
                 <div id="parseResult" style="margin-top:12px;"></div>
                 <div style="margin-top:12px;font-size:13px;color:#5B7296;">💡 Требуется подписка Про или Бизнес</div>
@@ -1681,8 +1684,8 @@ async def root():
         <div id="pageDialogs" style="display:none;">
             <div class="panel-topbar"><h1>💬 НейроДиалоги</h1></div>
             <div class="table-wrap-panel" style="padding:20px;">
-                <input id="dialogChat" placeholder="💬 @чат или ID" style="width:100%;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.3);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;">
-                <input id="dialogMessage" placeholder="Сообщение..." style="width:100%;margin-top:8px;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.3);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;">
+                <input id="dialogChat" placeholder="💬 @чат или ID" style="width:100%;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.2);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;">
+                <input id="dialogMessage" placeholder="Сообщение..." style="width:100%;margin-top:8px;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.2);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;">
                 <button class="btn-sm green" onclick="startDialog()" style="margin-top:10px;">💬 Начать</button>
                 <div style="margin-top:12px;font-size:13px;color:#5B7296;">💡 Требуется подписка Про или Бизнес</div>
             </div>
@@ -1692,7 +1695,7 @@ async def root():
         <div id="pageFunnel" style="display:none;">
             <div class="panel-topbar"><h1>🎯 Воронки</h1></div>
             <div class="table-wrap-panel" style="padding:20px;">
-                <input id="funnelName" placeholder="Название воронки" value="Моя воронка" style="width:100%;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.3);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;">
+                <input id="funnelName" placeholder="Название воронки" value="Моя воронка" style="width:100%;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.2);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;">
                 <button class="btn-sm green" onclick="generateFunnel()" style="margin-top:10px;">✨ Создать</button>
                 <div id="funnelResult" style="margin-top:12px;"></div>
                 <div style="margin-top:12px;font-size:13px;color:#5B7296;">💡 Требуется подписка Про или Бизнес</div>
@@ -1703,8 +1706,8 @@ async def root():
         <div id="pageScheduler" style="display:none;">
             <div class="panel-topbar"><h1>📅 Планировщик</h1></div>
             <div class="table-wrap-panel" style="padding:20px;">
-                <textarea id="schedText" placeholder="Текст поста..." rows="3" style="width:100%;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.3);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;"></textarea>
-                <input id="schedDate" type="datetime-local" style="width:100%;margin-top:8px;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.3);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;">
+                <textarea id="schedText" placeholder="Текст поста..." rows="3" style="width:100%;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.2);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;"></textarea>
+                <input id="schedDate" type="datetime-local" style="width:100%;margin-top:8px;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.2);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;">
                 <button class="btn-sm green" onclick="schedulePost()" style="margin-top:10px;">📅 Запланировать</button>
                 <div style="margin-top:12px;font-size:13px;color:#5B7296;">💡 Требуется подписка Про или Бизнес</div>
             </div>
@@ -1714,9 +1717,9 @@ async def root():
         <div id="pageMailing" style="display:none;">
             <div class="panel-topbar"><h1>📨 Рассылка</h1></div>
             <div class="table-wrap-panel" style="padding:20px;">
-                <input id="mailingChannel" placeholder="📢 @канал" style="width:100%;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.3);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;">
-                <textarea id="mailingText" placeholder="Текст сообщения..." rows="3" style="width:100%;margin-top:8px;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.3);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;"></textarea>
-                <input id="mailingCount" placeholder="Количество" value="10" style="width:100%;margin-top:8px;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.3);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;">
+                <input id="mailingChannel" placeholder="📢 @канал" style="width:100%;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.2);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;">
+                <textarea id="mailingText" placeholder="Текст сообщения..." rows="3" style="width:100%;margin-top:8px;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.2);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;"></textarea>
+                <input id="mailingCount" placeholder="Количество" value="10" style="width:100%;margin-top:8px;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.2);border-radius:8px;padding:10px;color:#E8EDF5;font-family:inherit;">
                 <button class="btn-sm green" onclick="sendMailing()" style="margin-top:10px;">📨 Отправить</button>
                 <div style="margin-top:12px;font-size:13px;color:#5B7296;">💡 Требуется подписка Про или Бизнес</div>
             </div>
@@ -1727,8 +1730,8 @@ async def root():
             <div class="panel-topbar"><h1>🌐 Прокси</h1></div>
             <div class="table-wrap-panel" style="padding:20px;">
                 <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;">
-                    <input id="proxyIp" placeholder="IP" style="background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.3);border-radius:8px;padding:8px;color:#E8EDF5;font-family:inherit;">
-                    <input id="proxyPort" placeholder="Порт" style="background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.3);border-radius:8px;padding:8px;color:#E8EDF5;font-family:inherit;">
+                    <input id="proxyIp" placeholder="IP" style="background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.2);border-radius:8px;padding:8px;color:#E8EDF5;font-family:inherit;">
+                    <input id="proxyPort" placeholder="Порт" style="background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.2);border-radius:8px;padding:8px;color:#E8EDF5;font-family:inherit;">
                 </div>
                 <button class="btn-sm green" onclick="addProxy()" style="margin-top:10px;">🌐 Добавить</button>
                 <div id="proxiesList" style="margin-top:12px;"></div>
@@ -1739,11 +1742,10 @@ async def root():
         <div id="pageAutoReplies" style="display:none;">
             <div class="panel-topbar"><h1>🤖 Авто-ответы</h1></div>
             <div class="table-wrap-panel" style="padding:20px;">
-                <input id="replyKeyword" placeholder="Ключевое слово" style="width:100%;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.3);border-radius:8px;padding:8px;color:#E8EDF5;font-family:inherit;">
-                <textarea id="replyText" placeholder="Текст ответа..." rows="2" style="width:100%;margin-top:8px;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.3);border-radius:8px;padding:8px;color:#E8EDF5;font-family:inherit;"></textarea>
+                <input id="replyKeyword" placeholder="Ключевое слово" style="width:100%;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.2);border-radius:8px;padding:8px;color:#E8EDF5;font-family:inherit;">
+                <textarea id="replyText" placeholder="Текст ответа..." rows="2" style="width:100%;margin-top:8px;background:rgba(8,12,20,0.6);border:1px solid rgba(30,45,69,0.2);border-radius:8px;padding:8px;color:#E8EDF5;font-family:inherit;"></textarea>
                 <button class="btn-sm green" onclick="addAutoReply()" style="margin-top:10px;">🤖 Добавить</button>
                 <div style="margin-top:12px;font-size:13px;color:#5B7296;">💡 Требуется подписка Про или Бизнес</div>
-                <div id="repliesList" style="margin-top:12px;"></div>
             </div>
         </div>
 
@@ -1762,7 +1764,7 @@ async def root():
 
 <script>
 // =============================================
-// ===== КОСМИЧЕСКИЙ ФОН (ЗВЁЗДЫ) =====
+// ===== КОСМИЧЕСКИЙ ФОН (МНОГО ЗВЁЗД) =====
 // =============================================
 (function() {
     const canvas = document.getElementById('stars-canvas');
@@ -1779,15 +1781,16 @@ async def root():
 
     function createStars() {
         stars = [];
-        const count = Math.floor((width * height) / 1500);
+        const count = Math.floor((width * height) / 800);
         for (let i = 0; i < count; i++) {
             stars.push({
                 x: Math.random() * width,
                 y: Math.random() * height,
-                radius: Math.random() * 1.5 + 0.3,
+                radius: Math.random() * 2 + 0.2,
                 opacity: Math.random() * 0.8 + 0.2,
-                speed: Math.random() * 0.02 + 0.005,
-                angle: Math.random() * Math.PI * 2
+                speed: Math.random() * 0.03 + 0.005,
+                angle: Math.random() * Math.PI * 2,
+                color: ['#fff', '#a8c8ff', '#ffd7a8', '#d4a8ff'][Math.floor(Math.random() * 4)]
             });
         }
     }
@@ -1799,16 +1802,23 @@ async def root():
             s.angle += s.speed;
             const twinkle = 0.5 + 0.5 * Math.sin(s.angle);
             const alpha = s.opacity * twinkle;
+            const radius = s.radius * (0.8 + 0.2 * Math.sin(s.angle * 1.3));
             ctx.beginPath();
-            ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
-            ctx.fillStyle = `rgba(255, 255, 255, ${alpha})`;
+            ctx.arc(s.x, s.y, radius, 0, Math.PI * 2);
+            ctx.fillStyle = s.color || '#fff';
+            ctx.globalAlpha = alpha;
             ctx.fill();
+            ctx.globalAlpha = 1;
             
-            // Свечение для ярких звёзд
-            if (s.radius > 1.2) {
-                ctx.shadowColor = `rgba(255, 255, 255, ${alpha * 0.3})`;
-                ctx.shadowBlur = 8;
+            if (s.radius > 1.5) {
+                ctx.shadowColor = `rgba(255,255,255,${alpha * 0.15})`;
+                ctx.shadowBlur = 12;
+                ctx.beginPath();
+                ctx.arc(s.x, s.y, radius * 2, 0, Math.PI * 2);
+                ctx.fillStyle = s.color || '#fff';
+                ctx.globalAlpha = alpha * 0.15;
                 ctx.fill();
+                ctx.globalAlpha = 1;
                 ctx.shadowBlur = 0;
             }
         });
@@ -1816,19 +1826,22 @@ async def root():
     }
     drawStars();
 
-    // Падающие звёзды
+    // Падающие звёзды (чаще)
     function createShootingStar() {
         const el = document.createElement('div');
         el.className = 'shooting-star';
-        el.style.left = Math.random() * 70 + '%';
-        el.style.top = Math.random() * 50 + '%';
-        el.style.animationDuration = (Math.random() * 2 + 1) + 's';
-        el.style.animationDelay = (Math.random() * 10) + 's';
+        el.style.left = Math.random() * 60 + '%';
+        el.style.top = Math.random() * 40 + '%';
+        el.style.animationDuration = (Math.random() * 1.5 + 0.8) + 's';
+        el.style.animationDelay = (Math.random() * 3) + 's';
+        el.style.width = (Math.random() * 3 + 2) + 'px';
         document.body.appendChild(el);
-        setTimeout(() => el.remove(), 12000);
+        setTimeout(() => el.remove(), 6000);
     }
-    setInterval(createShootingStar, 8000);
-    setTimeout(createShootingStar, 2000);
+    setInterval(createShootingStar, 3000);
+    for (let i = 0; i < 3; i++) {
+        setTimeout(createShootingStar, i * 1500);
+    }
 })();
 
 // =============================================
@@ -1871,7 +1884,7 @@ async function apiGet(endpoint) {
 }
 
 // =============================================
-// ===== АВТОРИЗАЦИЯ =====
+// ===== МОДАЛКА =====
 // =============================================
 
 function openModal() {
@@ -1892,6 +1905,10 @@ function switchAuthTab(tab, el) {
     document.getElementById('loginForm').style.display = tab === 'login' ? 'block' : 'none';
     document.getElementById('registerForm').style.display = tab === 'register' ? 'block' : 'none';
 }
+
+// =============================================
+// ===== АВТОРИЗАЦИЯ =====
+// =============================================
 
 async function register() {
     const name = document.getElementById('regName').value.trim();
@@ -2169,7 +2186,7 @@ async function loadReviews() {
         if (response.success && response.reviews) {
             const container = document.getElementById('reviewsGrid');
             container.innerHTML = response.reviews.map(r => 
-                `<div style="background:rgba(19,29,46,0.6);backdrop-filter:blur(10px);padding:14px;border-radius:10px;border:1px solid rgba(30,45,69,0.3);">
+                `<div style="background:rgba(19,29,46,0.5);backdrop-filter:blur(10px);padding:14px;border-radius:10px;border:1px solid rgba(30,45,69,0.2);">
                     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px;">
                         <span style="font-weight:600;">${r.name}</span>
                         <span style="color:#FFB800;">${'⭐'.repeat(r.rating)}</span>
@@ -2255,7 +2272,7 @@ async function runParse() {
     if (response.success) {
         let html = `<div style="color:#00D97E;font-weight:600;margin-bottom:8px;">✅ Найдено ${response.count} каналов</div>`;
         response.results.forEach(r => {
-            html += `<div style="padding:6px 0;border-bottom:1px solid rgba(30,45,69,0.3);display:flex;justify-content:space-between;font-size:14px;">
+            html += `<div style="padding:6px 0;border-bottom:1px solid rgba(30,45,69,0.2);display:flex;justify-content:space-between;font-size:14px;">
                 <span><strong>${r.name}</strong> ${r.username}</span>
                 <span style="color:#5B7296;">${r.subscribers} подписчиков</span>
             </div>`;
@@ -2312,7 +2329,7 @@ async function generateFunnel() {
     if (response.success) {
         result.innerHTML = `<div style="color:#00D97E;font-weight:600;margin-bottom:8px;">✅ ${response.message}</div>
             ${steps.map((s,i) => 
-                `<div style="padding:6px 0;border-bottom:1px solid rgba(30,45,69,0.3);font-size:14px;">
+                `<div style="padding:6px 0;border-bottom:1px solid rgba(30,45,69,0.2);font-size:14px;">
                     ${i+1}. ${s.title} — ${s.description} (${s.delay_days} д.)
                 </div>`
             ).join('')}`;
